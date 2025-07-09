@@ -111,7 +111,13 @@ def load_ckpt(args, isbest=False):
     print(filename)
     if os.path.isfile(filename):
         print("=> loading checkpoint '{}'".format(filename))
-        ckpt = torch.load(filename)
+        # Handle PyTorch 2.6+ weights_only default change
+        try:
+            ckpt = torch.load(filename, weights_only=False)
+        except Exception as e:
+            print(f"Warning: Failed to load checkpoint with weights_only=False: {e}")
+            # Fallback for older PyTorch versions
+            ckpt = torch.load(filename)
     else:
         print("Checkpoint does not exist!")
         print("Checked path -- {}".format(filename))
