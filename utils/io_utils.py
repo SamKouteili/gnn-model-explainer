@@ -275,7 +275,13 @@ def log_graph(
 
     node_colors = []
     # edge_colors = [min(max(w, 0.0), 1.0) for (u,v,w) in Gc.edges.data('weight', default=1)]
-    edge_colors = [w for (u, v, w) in Gc.edges.data("weight", default=1)]
+    edge_colors = []
+    for (u, v, w) in Gc.edges.data("weight", default=1):
+        # Convert tensor to float if necessary
+        if hasattr(w, 'item'):
+            edge_colors.append(float(w.item()))
+        else:
+            edge_colors.append(float(w))
 
     # maximum value for node color
     vmax = 8
@@ -325,12 +331,17 @@ def log_graph(
     pos_layout = nx.kamada_kawai_layout(Gc, weight=None)
     # pos_layout = nx.spring_layout(Gc, weight=None)
 
-    weights = [d for (u, v, d) in Gc.edges(data="weight", default=1)]
+    weights = []
+    for (u, v, d) in Gc.edges(data="weight", default=1):
+        # Convert tensor to float if necessary
+        if hasattr(d, 'item'):
+            weights.append(float(d.item()))
+        else:
+            weights.append(float(d))
+    
     if edge_vmax is None:
-        edge_vmax = statistics.median_high(
-            [d for (u, v, d) in Gc.edges(data="weight", default=1)]
-        )
-    min_color = min([d for (u, v, d) in Gc.edges(data="weight", default=1)])
+        edge_vmax = statistics.median_high(weights)
+    min_color = min(weights)
     # color range: gray to black
     edge_vmin = 2 * min_color - edge_vmax
     nx.draw(
