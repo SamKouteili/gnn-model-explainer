@@ -3,6 +3,12 @@
    Generating and manipulaton the synthetic graphs needed for the paper's experiments.
 """
 
+import utils.io_utils as io_utils
+from utils import featgen
+from utils import synthetic_structsim
+from tensorboardX import SummaryWriter
+import numpy as np
+import networkx as nx
 import os
 
 from matplotlib import pyplot as plt
@@ -12,16 +18,6 @@ import matplotlib.colors as colors
 
 # Set matplotlib backend to file writing
 plt.switch_backend("agg")
-
-import networkx as nx
-
-import numpy as np
-
-from tensorboardX import SummaryWriter
-
-from utils import synthetic_structsim
-from utils import featgen
-import utils.io_utils as io_utils
 
 
 ####################################
@@ -80,9 +76,10 @@ def preprocess_input_graph(G, labels, normalize_adj=False):
     Returns:
         A dictionary containing adjacency, node features and labels
     """
-    adj = np.array(nx.to_numpy_matrix(G))
+    adj = np.array(nx.to_numpy_array(G))
     if normalize_adj:
-        sqrt_deg = np.diag(1.0 / np.sqrt(np.sum(adj, axis=0, dtype=float).squeeze()))
+        sqrt_deg = np.diag(
+            1.0 / np.sqrt(np.sum(adj, axis=0, dtype=float).squeeze()))
         adj = np.matmul(np.matmul(sqrt_deg, adj), sqrt_deg)
 
     existing_node = list(G.nodes)[-1]
@@ -158,8 +155,10 @@ def gen_syn2(nb_shapes=100, width_basis=350):
     random_sigma = [1.0] * 8
 
     # Create two grids
-    mu_1, sigma_1 = np.array([-1.0] * 2 + random_mu), np.array([0.5] * 2 + random_sigma)
-    mu_2, sigma_2 = np.array([1.0] * 2 + random_mu), np.array([0.5] * 2 + random_sigma)
+    mu_1, sigma_1 = np.array(
+        [-1.0] * 2 + random_mu), np.array([0.5] * 2 + random_sigma)
+    mu_2, sigma_2 = np.array(
+        [1.0] * 2 + random_mu), np.array([0.5] * 2 + random_sigma)
     feat_gen_G1 = featgen.GaussianFeatureGen(mu=mu_1, sigma=sigma_1)
     feat_gen_G2 = featgen.GaussianFeatureGen(mu=mu_2, sigma=sigma_2)
     G1, role_id1, name = gen_syn1(feature_generator=feat_gen_G1, m=4)
@@ -179,7 +178,8 @@ def gen_syn2(nb_shapes=100, width_basis=350):
     n_pert_edges = width_basis
     G = join_graph(G1, G2, n_pert_edges)
 
-    name = basis_type + "_" + str(width_basis) + "_" + str(nb_shapes) + "_2comm"
+    name = basis_type + "_" + str(width_basis) + \
+        "_" + str(nb_shapes) + "_2comm"
 
     return G, label, name
 

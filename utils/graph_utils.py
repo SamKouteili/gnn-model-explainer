@@ -36,7 +36,7 @@ class GraphSampler(torch.utils.data.Dataset):
         self.feat_dim = G_list[0].nodes[existing_node]["feat"].shape[0]
 
         for G in G_list:
-            adj = np.array(nx.to_numpy_matrix(G))
+            adj = np.array(nx.to_numpy_array(G))
             if normalize:
                 sqrt_deg = np.diag(
                     1.0 / np.sqrt(np.sum(adj, axis=0, dtype=float).squeeze())
@@ -56,7 +56,8 @@ class GraphSampler(torch.utils.data.Dataset):
             elif features == "deg-num":
                 degs = np.sum(np.array(adj), 1)
                 degs = np.expand_dims(
-                    np.pad(degs, [0, self.max_num_nodes - G.number_of_nodes()], 0),
+                    np.pad(degs, [0, self.max_num_nodes -
+                           G.number_of_nodes()], 0),
                     axis=1,
                 )
                 self.feature_all.append(degs)
@@ -105,7 +106,8 @@ class GraphSampler(torch.utils.data.Dataset):
                 g_feat = np.hstack([degs, clusterings])
                 if "feat" in G.nodes[0]:
                     node_feats = np.array(
-                        [G.nodes[i]["feat"] for i in range(G.number_of_nodes())]
+                        [G.nodes[i]["feat"]
+                            for i in range(G.number_of_nodes())]
                     )
                     node_feats = np.pad(
                         node_feats,
@@ -118,7 +120,8 @@ class GraphSampler(torch.utils.data.Dataset):
 
             if assign_feat == "id":
                 self.assign_feat_all.append(
-                    np.hstack((np.identity(self.max_num_nodes), self.feature_all[-1]))
+                    np.hstack(
+                        (np.identity(self.max_num_nodes), self.feature_all[-1]))
                 )
             else:
                 self.assign_feat_all.append(self.feature_all[-1])
@@ -143,6 +146,7 @@ class GraphSampler(torch.utils.data.Dataset):
             "num_nodes": num_nodes,
             "assign_feats": self.assign_feat_all[idx].copy(),
         }
+
 
 def neighborhoods(adj, n_hops, use_cuda):
     """Returns the n_hops degree adjacency matrix adj."""

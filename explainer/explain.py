@@ -39,6 +39,7 @@ FloatTensor = torch.cuda.FloatTensor if use_cuda else torch.FloatTensor
 LongTensor = torch.cuda.LongTensor if use_cuda else torch.LongTensor
 Tensor = FloatTensor
 
+
 class Explainer:
     def __init__(
         self,
@@ -64,13 +65,14 @@ class Explainer:
         self.n_hops = args.num_gc_layers
         self.graph_mode = graph_mode
         self.graph_idx = graph_idx
-        self.neighborhoods = None if self.graph_mode else graph_utils.neighborhoods(adj=self.adj, n_hops=self.n_hops, use_cuda=use_cuda)
+        self.neighborhoods = None if self.graph_mode else graph_utils.neighborhoods(
+            adj=self.adj, n_hops=self.n_hops, use_cuda=use_cuda)
         self.args = args
         self.writer = writer
         self.print_training = print_training
 
-
     # Main method
+
     def explain(
         self, node_idx, graph_idx=0, graph_mode=False, unconstrained=False, model="exp"
     ):
@@ -94,8 +96,8 @@ class Explainer:
         sub_adj = np.expand_dims(sub_adj, axis=0)
         sub_feat = np.expand_dims(sub_feat, axis=0)
 
-        adj   = torch.tensor(sub_adj, dtype=torch.float)
-        x     = torch.tensor(sub_feat, requires_grad=True, dtype=torch.float)
+        adj = torch.tensor(sub_adj, dtype=torch.float)
+        x = torch.tensor(sub_feat, requires_grad=True, dtype=torch.float)
         label = torch.tensor(sub_label, dtype=torch.long)
 
         if self.graph_mode:
@@ -120,13 +122,13 @@ class Explainer:
 
         self.model.eval()
 
-
         # gradient baseline
         if model == "grad":
             explainer.zero_grad()
             # pdb.set_trace()
             adj_grad = torch.abs(
-                explainer.adj_feat_grad(node_idx_new, pred_label[node_idx_new])[0]
+                explainer.adj_feat_grad(
+                    node_idx_new, pred_label[node_idx_new])[0]
             )[graph_idx]
             masked_adj = adj_grad + adj_grad.t()
             masked_adj = nn.functional.sigmoid(masked_adj)
@@ -137,7 +139,8 @@ class Explainer:
             for epoch in range(self.args.num_epochs):
                 explainer.zero_grad()
                 explainer.optimizer.zero_grad()
-                ypred, adj_atts = explainer(node_idx_new, unconstrained=unconstrained)
+                ypred, adj_atts = explainer(
+                    node_idx_new, unconstrained=unconstrained)
                 loss = explainer.loss(ypred, pred_label, node_idx_new, epoch)
                 loss.backward()
 
@@ -185,7 +188,8 @@ class Explainer:
                             io_utils.log_matrix(
                                 self.writer, node_adj_att[0], "att/matrix", epoch
                             )
-                            node_adj_att = node_adj_att[0].cpu().detach().numpy()
+                            node_adj_att = node_adj_att[0].cpu(
+                            ).detach().numpy()
                             G = io_utils.denoise_graph(
                                 node_adj_att,
                                 node_idx_new,
@@ -207,7 +211,8 @@ class Explainer:
             print("finished training in ", time.time() - begin_time)
             if model == "exp":
                 masked_adj = (
-                    explainer.masked_adj[0].cpu().detach().numpy() * sub_adj.squeeze()
+                    explainer.masked_adj[0].cpu().detach(
+                    ).numpy() * sub_adj.squeeze()
                 )
             else:
                 adj_atts = nn.functional.sigmoid(adj_atts).squeeze()
@@ -220,8 +225,8 @@ class Explainer:
             print("Saved adjacency matrix to ", fname)
         return masked_adj
 
-
     # NODE EXPLAINER
+
     def explain_nodes(self, node_indices, args, graph_idx=0):
         """
         Explain nodes
@@ -241,11 +246,12 @@ class Explainer:
         new_ref_idx, _, ref_feat, _, _ = self.extract_neighborhood(ref_idx)
         new_curr_idx, _, curr_feat, _, _ = self.extract_neighborhood(curr_idx)
 
-        G_ref = io_utils.denoise_graph(ref_adj, new_ref_idx, ref_feat, threshold=0.1)
+        G_ref = io_utils.denoise_graph(
+            ref_adj, new_ref_idx, ref_feat, threshold=0.1)
         denoised_ref_feat = np.array(
             [G_ref.nodes[node]["feat"] for node in G_ref.nodes()]
         )
-        denoised_ref_adj = nx.to_numpy_matrix(G_ref)
+        denoised_ref_adj = nx.to_numpy_array(G_ref)
         # ref center node
         ref_node_idx = list(G_ref.nodes()).index(new_ref_idx)
 
@@ -255,7 +261,7 @@ class Explainer:
         denoised_curr_feat = np.array(
             [G_curr.nodes[node]["feat"] for node in G_curr.nodes()]
         )
-        denoised_curr_adj = nx.to_numpy_matrix(G_curr)
+        denoised_curr_adj = nx.to_numpy_array(G_curr)
         # curr center node
         curr_node_idx = list(G_curr.nodes()).index(new_curr_idx)
 
@@ -291,7 +297,6 @@ class Explainer:
 
         return masked_adjs
 
-
     def explain_nodes_gnn_stats(self, node_indices, args, graph_idx=0, model="exp"):
         masked_adjs = [
             self.explain(node_idx, graph_idx=graph_idx, model=model)
@@ -305,12 +310,14 @@ class Explainer:
         real_all = []
         for i, idx in enumerate(node_indices):
             new_idx, _, feat, _, _ = self.extract_neighborhood(idx)
-            G = io_utils.denoise_graph(masked_adjs[i], new_idx, feat, threshold_num=20)
+            G = io_utils.denoise_graph(
+                masked_adjs[i], new_idx, feat, threshold_num=20)
             pred, real = self.make_pred_real(masked_adjs[i], new_idx)
             pred_all.append(pred)
             real_all.append(real)
-            denoised_feat = np.array([G.nodes[node]["feat"] for node in G.nodes()])
-            denoised_adj = nx.to_numpy_matrix(G)
+            denoised_feat = np.array([G.nodes[node]["feat"]
+                                     for node in G.nodes()])
+            denoised_adj = nx.to_numpy_array(G)
             graphs.append(G)
             feats.append(denoised_feat)
             adjs.append(denoised_adj)
@@ -326,7 +333,8 @@ class Explainer:
         real_all = np.concatenate((real_all), axis=0)
 
         auc_all = roc_auc_score(real_all, pred_all)
-        precision, recall, thresholds = precision_recall_curve(real_all, pred_all)
+        precision, recall, thresholds = precision_recall_curve(
+            real_all, pred_all)
 
         plt.switch_backend("agg")
         plt.plot(recall, precision)
@@ -335,7 +343,8 @@ class Explainer:
         plt.close()
 
         auc_all = roc_auc_score(real_all, pred_all)
-        precision, recall, thresholds = precision_recall_curve(real_all, pred_all)
+        precision, recall, thresholds = precision_recall_curve(
+            real_all, pred_all)
 
         plt.switch_backend("agg")
         plt.plot(recall, precision)
@@ -360,7 +369,8 @@ class Explainer:
         masked_adjs = []
 
         for graph_idx in graph_indices:
-            masked_adj = self.explain(node_idx=0, graph_idx=graph_idx, graph_mode=True)
+            masked_adj = self.explain(
+                node_idx=0, graph_idx=graph_idx, graph_mode=True)
             G_denoised = io_utils.denoise_graph(
                 masked_adj,
                 0,
@@ -417,7 +427,8 @@ class Explainer:
             pred = np.argmax(self.pred[0][graph_idx], axis=0)
         else:
             pred = np.argmax(self.pred[graph_idx][self.train_idx], axis=1)
-        print(metrics.confusion_matrix(self.label[graph_idx][self.train_idx], pred))
+        print(metrics.confusion_matrix(
+            self.label[graph_idx][self.train_idx], pred))
         plt.switch_backend("agg")
         fig = plt.figure(figsize=(5, 3), dpi=600)
         for i in range(2):
@@ -459,7 +470,8 @@ class Explainer:
                 ax.xaxis.set_visible(False)
         fig.canvas.draw()
         self.writer.add_image(
-            "local/representer_neigh", tensorboardX.utils.figure_to_image(fig), 0
+            "local/representer_neigh", tensorboardX.utils.figure_to_image(
+                fig), 0
         )
 
     def representer(self):
@@ -487,8 +499,8 @@ class Explainer:
             pred_idx = pred_idx.cuda()
         self.alpha = self.preds_grad
 
-
     # Utilities
+
     def extract_neighborhood(self, node_idx, graph_idx=0):
         """Returns the neighborhood of a given ndoe."""
         neighbors_adj_row = self.neighborhoods[graph_idx][node_idx, :]
@@ -511,7 +523,8 @@ class Explainer:
         ref_feat = torch.FloatTensor(ref_feat)
         curr_feat = torch.FloatTensor(curr_feat)
 
-        P = nn.Parameter(torch.FloatTensor(ref_adj.shape[0], curr_adj.shape[0]))
+        P = nn.Parameter(torch.FloatTensor(
+            ref_adj.shape[0], curr_adj.shape[0]))
         with torch.no_grad():
             nn.init.constant_(P, 1.0 / ref_adj.shape[0])
             P[ref_node_idx, :] = 0.0
@@ -610,16 +623,19 @@ class ExplainModule(nn.Module):
             num_nodes, init_strategy=init_strategy
         )
 
-        self.feat_mask = self.construct_feat_mask(x.size(-1), init_strategy="constant")
+        self.feat_mask = self.construct_feat_mask(
+            x.size(-1), init_strategy="constant")
         params = [self.mask, self.feat_mask]
         if self.mask_bias is not None:
             params.append(self.mask_bias)
         # For masking diagonal entries
-        self.diag_mask = torch.ones(num_nodes, num_nodes) - torch.eye(num_nodes)
+        self.diag_mask = torch.ones(
+            num_nodes, num_nodes) - torch.eye(num_nodes)
         if args.gpu:
             self.diag_mask = self.diag_mask.cuda()
 
-        self.scheduler, self.optimizer = train_utils.build_optimizer(args, params)
+        self.scheduler, self.optimizer = train_utils.build_optimizer(
+            args, params)
 
         self.coeffs = {
             "size": 0.005,
@@ -686,9 +702,11 @@ class ExplainModule(nn.Module):
         x = self.x.cuda() if self.args.gpu else self.x
 
         if unconstrained:
-            sym_mask = torch.sigmoid(self.mask) if self.use_sigmoid else self.mask
+            sym_mask = torch.sigmoid(
+                self.mask) if self.use_sigmoid else self.mask
             self.masked_adj = (
-                torch.unsqueeze((sym_mask + sym_mask.t()) / 2, 0) * self.diag_mask
+                torch.unsqueeze((sym_mask + sym_mask.t()) /
+                                2, 0) * self.diag_mask
             )
         else:
             self.masked_adj = self._masked_adj()
@@ -761,7 +779,8 @@ class ExplainModule(nn.Module):
 
         # pre_mask_sum = torch.sum(self.feat_mask)
         feat_mask = (
-            torch.sigmoid(self.feat_mask) if self.use_sigmoid else self.feat_mask
+            torch.sigmoid(
+                self.feat_mask) if self.use_sigmoid else self.feat_mask
         )
         feat_size_loss = self.coeffs["feat_size"] * torch.mean(feat_mask)
 
@@ -770,11 +789,12 @@ class ExplainModule(nn.Module):
         mask_ent_loss = self.coeffs["ent"] * torch.mean(mask_ent)
 
         feat_mask_ent = - feat_mask             \
-                        * torch.log(feat_mask)  \
-                        - (1 - feat_mask)       \
-                        * torch.log(1 - feat_mask)
+            * torch.log(feat_mask)  \
+            - (1 - feat_mask)       \
+            * torch.log(1 - feat_mask)
 
-        feat_mask_ent_loss = self.coeffs["feat_ent"] * torch.mean(feat_mask_ent)
+        feat_mask_ent_loss = self.coeffs["feat_ent"] * \
+            torch.mean(feat_mask_ent)
 
         # laplacian
         D = torch.diag(torch.sum(self.masked_adj[0], 0))
@@ -788,9 +808,9 @@ class ExplainModule(nn.Module):
             lap_loss = 0
         else:
             lap_loss = (self.coeffs["lap"]
-                * (pred_label_t @ L @ pred_label_t)
-                / self.adj.numel()
-            )
+                        * (pred_label_t @ L @ pred_label_t)
+                        / self.adj.numel()
+                        )
 
         # grad
         # adj
@@ -808,8 +828,10 @@ class ExplainModule(nn.Module):
         loss = pred_loss + size_loss + lap_loss + mask_ent_loss + feat_size_loss
         if self.writer is not None:
             self.writer.add_scalar("optimization/size_loss", size_loss, epoch)
-            self.writer.add_scalar("optimization/feat_size_loss", feat_size_loss, epoch)
-            self.writer.add_scalar("optimization/mask_ent_loss", mask_ent_loss, epoch)
+            self.writer.add_scalar(
+                "optimization/feat_size_loss", feat_size_loss, epoch)
+            self.writer.add_scalar(
+                "optimization/mask_ent_loss", mask_ent_loss, epoch)
             self.writer.add_scalar(
                 "optimization/feat_mask_ent_loss", mask_ent_loss, epoch
             )
@@ -846,7 +868,8 @@ class ExplainModule(nn.Module):
 
         fig = plt.figure(figsize=(4, 3), dpi=400)
         # use [0] to remove the batch dim
-        plt.imshow(self.masked_adj[0].cpu().detach().numpy(), cmap=plt.get_cmap("BuPu"))
+        plt.imshow(self.masked_adj[0].cpu().detach(
+        ).numpy(), cmap=plt.get_cmap("BuPu"))
         cbar = plt.colorbar()
         cbar.solids.set_edgecolor("face")
 
@@ -859,7 +882,8 @@ class ExplainModule(nn.Module):
         if self.args.mask_bias:
             fig = plt.figure(figsize=(4, 3), dpi=400)
             # use [0] to remove the batch dim
-            plt.imshow(self.mask_bias.cpu().detach().numpy(), cmap=plt.get_cmap("BuPu"))
+            plt.imshow(self.mask_bias.cpu().detach().numpy(),
+                       cmap=plt.get_cmap("BuPu"))
             cbar = plt.colorbar()
             cbar.solids.set_edgecolor("face")
 
@@ -888,9 +912,11 @@ class ExplainModule(nn.Module):
         adj_grad = (adj_grad + adj_grad.t()) / 2
         adj_grad = (adj_grad * self.adj).squeeze()
         if log_adj:
-            io_utils.log_matrix(self.writer, adj_grad, "grad/adj_masked", epoch)
+            io_utils.log_matrix(self.writer, adj_grad,
+                                "grad/adj_masked", epoch)
             self.adj.requires_grad = False
-            io_utils.log_matrix(self.writer, self.adj.squeeze(), "grad/adj_orig", epoch)
+            io_utils.log_matrix(
+                self.writer, self.adj.squeeze(), "grad/adj_orig", epoch)
 
         masked_adj = self.masked_adj[0].cpu().detach().numpy()
 
@@ -979,4 +1005,3 @@ class ExplainModule(nn.Module):
                 edge_vmax=None,
                 args=self.args,
             )
-

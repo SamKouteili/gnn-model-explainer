@@ -55,7 +55,7 @@ def prepare_data(graphs, args, test_graphs=None, max_nodes=0):
     else:
         train_idx = int(len(graphs) * args.train_ratio)
         train_graphs = graphs[:train_idx]
-        val_graphs = graph[train_idx:]
+        val_graphs = graphs[train_idx:]
     print(
         "Num training graphs: ",
         len(train_graphs),
@@ -89,9 +89,9 @@ def prepare_data(graphs, args, test_graphs=None, max_nodes=0):
     )
 
     dataset_sampler = graph_utils.GraphSampler(
-        val_graphs, 
-        normalize=False, 
-        max_num_nodes=max_nodes, 
+        val_graphs,
+        normalize=False,
+        max_num_nodes=max_nodes,
         features=args.feature_type
     )
     val_dataset_loader = torch.utils.data.DataLoader(
@@ -126,7 +126,7 @@ def prepare_data(graphs, args, test_graphs=None, max_nodes=0):
 
 #############################
 #
-# Training 
+# Training
 #
 #############################
 def train(
@@ -180,12 +180,14 @@ def train(
             adj = Variable(data["adj"].float(), requires_grad=False).cuda()
             h0 = Variable(data["feats"].float(), requires_grad=False).cuda()
             label = Variable(data["label"].long()).cuda()
-            batch_num_nodes = data["num_nodes"].int().numpy() if mask_nodes else None
+            batch_num_nodes = data["num_nodes"].int(
+            ).numpy() if mask_nodes else None
             assign_input = Variable(
                 data["assign_feats"].float(), requires_grad=False
             ).cuda()
 
-            ypred, att_adj = model(h0, adj, batch_num_nodes, assign_x=assign_input)
+            ypred, att_adj = model(
+                h0, adj, batch_num_nodes, assign_x=assign_input)
             if batch_idx < 5:
                 predictions += ypred.cpu().detach().numpy().tolist()
 
@@ -206,7 +208,8 @@ def train(
             if args.linkpred:
                 writer.add_scalar("loss/linkpred_loss", model.link_loss, epoch)
         print("Avg loss: ", avg_loss, "; epoch time: ", elapsed)
-        result = evaluate(dataset, model, args, name="Train", max_num_examples=100)
+        result = evaluate(dataset, model, args,
+                          name="Train", max_num_examples=100)
         train_accs.append(result["acc"])
         train_epochs.append(epoch)
         if val_dataset is not None:
@@ -222,7 +225,8 @@ def train(
         if writer is not None:
             writer.add_scalar("acc/train_acc", result["acc"], epoch)
             writer.add_scalar("acc/val_acc", val_result["acc"], epoch)
-            writer.add_scalar("loss/best_val_loss", best_val_result["loss"], epoch)
+            writer.add_scalar("loss/best_val_loss",
+                              best_val_result["loss"], epoch)
             if test_dataset is not None:
                 writer.add_scalar("acc/test_acc", test_result["acc"], epoch)
 
@@ -237,9 +241,11 @@ def train(
     matplotlib.style.use("seaborn")
     plt.switch_backend("agg")
     plt.figure()
-    plt.plot(train_epochs, math_utils.exp_moving_avg(train_accs, 0.85), "-", lw=1)
+    plt.plot(train_epochs, math_utils.exp_moving_avg(
+        train_accs, 0.85), "-", lw=1)
     if test_dataset is not None:
-        plt.plot(best_val_epochs, best_val_accs, "bo", test_epochs, test_accs, "go")
+        plt.plot(best_val_epochs, best_val_accs,
+                 "bo", test_epochs, test_accs, "go")
         plt.legend(["train", "val", "test"])
     else:
         plt.plot(best_val_epochs, best_val_accs, "bo")
@@ -257,7 +263,8 @@ def train(
         "pred": np.expand_dims(predictions, axis=0),
         "train_idx": list(range(len(dataset))),
     }
-    io_utils.save_checkpoint(model, optimizer, args, num_epochs=-1, cg_dict=cg_data)
+    io_utils.save_checkpoint(model, optimizer, args,
+                             num_epochs=-1, cg_dict=cg_data)
     return model, val_accs
 
 
@@ -297,7 +304,7 @@ def train_node_classifier(G, labels, model, args, writer=None):
         nn.utils.clip_grad_norm(model.parameters(), args.clip)
 
         optimizer.step()
-        #for param_group in optimizer.param_groups:
+        # for param_group in optimizer.param_groups:
         #    print(param_group["lr"])
         elapsed = time.time() - begin_time
 
@@ -313,11 +320,13 @@ def train_node_classifier(G, labels, model, args, writer=None):
             )
             writer.add_scalars(
                 "recall",
-                {"train": result_train["recall"], "test": result_test["recall"]},
+                {"train": result_train["recall"],
+                    "test": result_test["recall"]},
                 epoch,
             )
             writer.add_scalars(
-                "acc", {"train": result_train["acc"], "test": result_test["acc"]}, epoch
+                "acc", {"train": result_train["acc"],
+                        "test": result_test["acc"]}, epoch
             )
 
         if epoch % 10 == 0:
@@ -358,7 +367,8 @@ def train_node_classifier(G, labels, model, args, writer=None):
     }
     # import pdb
     # pdb.set_trace()
-    io_utils.save_checkpoint(model, optimizer, args, num_epochs=-1, cg_dict=cg_data)
+    io_utils.save_checkpoint(model, optimizer, args,
+                             num_epochs=-1, cg_dict=cg_data)
 
 
 def train_node_classifier_multigraph(G_list, labels, model, args, writer=None):
@@ -396,7 +406,8 @@ def train_node_classifier_multigraph(G_list, labels, model, args, writer=None):
         )
         adj = torch.cat([adj, torch.tensor(data["adj"], dtype=torch.float)])
         x = torch.cat(
-            [x, torch.tensor(data["feat"], requires_grad=True, dtype=torch.float)]
+            [x, torch.tensor(data["feat"], requires_grad=True,
+                             dtype=torch.float)]
         )
 
     scheduler, optimizer = train_utils.build_optimizer(
@@ -427,7 +438,7 @@ def train_node_classifier_multigraph(G_list, labels, model, args, writer=None):
         nn.utils.clip_grad_norm(model.parameters(), args.clip)
 
         optimizer.step()
-        #for param_group in optimizer.param_groups:
+        # for param_group in optimizer.param_groups:
         #    print(param_group["lr"])
         elapsed = time.time() - begin_time
 
@@ -443,11 +454,13 @@ def train_node_classifier_multigraph(G_list, labels, model, args, writer=None):
             )
             writer.add_scalars(
                 "recall",
-                {"train": result_train["recall"], "test": result_test["recall"]},
+                {"train": result_train["recall"],
+                    "test": result_test["recall"]},
                 epoch,
             )
             writer.add_scalars(
-                "acc", {"train": result_train["acc"], "test": result_test["acc"]}, epoch
+                "acc", {"train": result_train["acc"],
+                        "test": result_test["acc"]}, epoch
             )
 
         print(
@@ -481,8 +494,8 @@ def train_node_classifier_multigraph(G_list, labels, model, args, writer=None):
         "pred": ypred.cpu().detach().numpy(),
         "train_idx": train_idx_all,
     }
-    io_utils.save_checkpoint(model, optimizer, args, num_epochs=-1, cg_dict=cg_data)
-
+    io_utils.save_checkpoint(model, optimizer, args,
+                             num_epochs=-1, cg_dict=cg_data)
 
 
 #############################
@@ -548,7 +561,6 @@ def evaluate_node(ypred, labels, train_idx, test_idx):
     return result_train, result_test
 
 
-
 #############################
 #
 # Run Experiments
@@ -591,7 +603,8 @@ def ppi_essential_task(args, writer=None):
 def syn_task1(args, writer=None):
     # data
     G, labels, name = gengraph.gen_syn1(
-        feature_generator=featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
+        feature_generator=featgen.ConstFeatureGen(
+            np.ones(args.input_dim, dtype=float))
     )
     num_classes = max(labels) + 1
 
@@ -651,7 +664,8 @@ def syn_task2(args, writer=None):
 def syn_task3(args, writer=None):
     # data
     G, labels, name = gengraph.gen_syn3(
-        feature_generator=featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
+        feature_generator=featgen.ConstFeatureGen(
+            np.ones(args.input_dim, dtype=float))
     )
     print(labels)
     num_classes = max(labels) + 1
@@ -678,7 +692,8 @@ def syn_task3(args, writer=None):
 def syn_task4(args, writer=None):
     # data
     G, labels, name = gengraph.gen_syn4(
-        feature_generator=featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
+        feature_generator=featgen.ConstFeatureGen(
+            np.ones(args.input_dim, dtype=float))
     )
     print(labels)
     num_classes = max(labels) + 1
@@ -706,7 +721,8 @@ def syn_task4(args, writer=None):
 def syn_task5(args, writer=None):
     # data
     G, labels, name = gengraph.gen_syn5(
-        feature_generator=featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
+        feature_generator=featgen.ConstFeatureGen(
+            np.ones(args.input_dim, dtype=float))
     )
     print(labels)
     print("Number of nodes: ", G.number_of_nodes())
@@ -746,7 +762,8 @@ def pkl_task(args, feat=None):
         test_graphs[i].graph["label"] = test_labels[i]
 
     if feat is None:
-        featgen_const = featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
+        featgen_const = featgen.ConstFeatureGen(
+            np.ones(args.input_dim, dtype=float))
         for G in graphs:
             featgen_const.gen_node_features(G)
         for G in test_graphs:
@@ -885,7 +902,8 @@ def benchmark_task(args, writer=None, feat="node-label"):
                 # G.nodes[u]['feat'] = feat * 2 - 1
     else:
         print("Using constant labels")
-        featgen_const = featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
+        featgen_const = featgen.ConstFeatureGen(
+            np.ones(args.input_dim, dtype=float))
         for G in graphs:
             featgen_const.gen_node_features(G)
 
@@ -950,7 +968,8 @@ def benchmark_task_val(args, writer=None, feat="node-label"):
                 G.nodes[u]["feat"] = np.array(G.nodes[u]["label"])
     else:
         print("Using constant labels")
-        featgen_const = featgen.ConstFeatureGen(np.ones(args.input_dim, dtype=float))
+        featgen_const = featgen.ConstFeatureGen(
+            np.ones(args.input_dim, dtype=float))
         for G in graphs:
             featgen_const.gen_node_features(G)
 
@@ -995,7 +1014,8 @@ def arg_parse():
     benchmark_parser.add_argument(
         "--bmname", dest="bmname", help="Name of the benchmark dataset"
     )
-    io_parser.add_argument("--pkl", dest="pkl_fname", help="Name of the pkl data file")
+    io_parser.add_argument("--pkl", dest="pkl_fname",
+                           help="Name of the pkl data file")
 
     softpool_parser = parser.add_argument_group()
     softpool_parser.add_argument(
@@ -1021,8 +1041,10 @@ def arg_parse():
     parser.add_argument(
         "--datadir", dest="datadir", help="Directory where benchmark is located"
     )
-    parser.add_argument("--logdir", dest="logdir", help="Tensorboard log directory")
-    parser.add_argument("--ckptdir", dest="ckptdir", help="Model checkpoint directory")
+    parser.add_argument("--logdir", dest="logdir",
+                        help="Tensorboard log directory")
+    parser.add_argument("--ckptdir", dest="ckptdir",
+                        help="Model checkpoint directory")
     parser.add_argument("--cuda", dest="cuda", help="CUDA.")
     parser.add_argument(
         "--gpu",
@@ -1038,7 +1060,8 @@ def arg_parse():
         type=int,
         help="Maximum number of nodes (ignore graghs with nodes exceeding the number.",
     )
-    parser.add_argument("--batch-size", dest="batch_size", type=int, help="Batch size.")
+    parser.add_argument("--batch-size", dest="batch_size",
+                        type=int, help="Batch size.")
     parser.add_argument(
         "--epochs", dest="num_epochs", type=int, help="Number of epochs to train."
     )
@@ -1085,7 +1108,8 @@ def arg_parse():
         default=False,
         help="Whether batch normalization is used",
     )
-    parser.add_argument("--dropout", dest="dropout", type=float, help="Dropout rate.")
+    parser.add_argument("--dropout", dest="dropout",
+                        type=float, help="Dropout rate.")
     parser.add_argument(
         "--nobias",
         dest="bias",
@@ -1177,4 +1201,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
