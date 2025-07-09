@@ -238,7 +238,15 @@ def train(
             test_epochs.append(test_result["epoch"])
             test_accs.append(test_result["acc"])
 
-    matplotlib.style.use("seaborn")
+    # Use seaborn-v0_8 style if available, otherwise use default
+    try:
+        matplotlib.style.use("seaborn-v0_8")
+    except OSError:
+        try:
+            matplotlib.style.use("seaborn")
+        except OSError:
+            matplotlib.style.use("default")
+    
     plt.switch_backend("agg")
     plt.figure()
     plt.plot(train_epochs, math_utils.exp_moving_avg(
