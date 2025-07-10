@@ -285,7 +285,7 @@ def load_attribution_graphs_semantic(
 
         logger.info(
             f"Loading {len(benign_files)} benign graphs with semantic processing")
-        for file_path in benign_files:
+        for file_path in tqdm.tqdm(benign_files, desc="Loading benign graphs"):
             try:
                 with open(file_path, 'r') as f:
                     data = json.load(f)
@@ -294,8 +294,6 @@ def load_attribution_graphs_semantic(
                     data, label=0, converter=converter)
                 graphs.append(graph)
                 labels.append(0)
-                logger.info(
-                    f"Successfully loaded {file_path.name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
             except Exception as e:
                 logger.warning(f"Failed to load {file_path}: {e}")
                 continue
@@ -309,7 +307,7 @@ def load_attribution_graphs_semantic(
 
         logger.info(
             f"Loading {len(injected_files)} injected graphs with semantic processing")
-        for file_path in injected_files:
+        for file_path in tqdm.tqdm(injected_files, desc="Loading injected graphs"):
             try:
                 with open(file_path, 'r') as f:
                     data = json.load(f)
@@ -318,8 +316,6 @@ def load_attribution_graphs_semantic(
                     data, label=1, converter=converter)
                 graphs.append(graph)
                 labels.append(1)
-                logger.info(
-                    f"Successfully loaded {file_path.name}: {graph.number_of_nodes()} nodes, {graph.number_of_edges()} edges")
             except Exception as e:
                 logger.warning(f"Failed to load {file_path}: {e}")
                 continue
