@@ -264,9 +264,18 @@ def load_attribution_graphs_semantic(
     # Try to load from cache
     if cache_file.exists():
         logger.info(f"Loading cached semantic graphs from {cache_file}")
-        with open(cache_file, 'rb') as f:
-            cached_data = pickle.load(f)
-        return cached_data["graphs"], cached_data["labels"]
+        try:
+            with open(cache_file, 'rb') as f:
+                cached_data = pickle.load(f)
+            return cached_data["graphs"], cached_data["labels"]
+        except (EOFError, pickle.UnpicklingError, KeyError) as e:
+            logger.warning(f"Cache file {cache_file} is corrupted ({e}), regenerating...")
+            # Remove corrupted cache file
+            cache_file.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to load cache file {cache_file} ({e}), regenerating...")
+            # Remove problematic cache file
+            cache_file.unlink()
 
     logger.info(f"Loading semantic graphs from {data_dir}")
 
