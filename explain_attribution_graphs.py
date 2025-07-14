@@ -61,7 +61,6 @@ def main():
         "--num-gc-layers", str(args.num_gc_layers),
         "--graph-mode",  # We're doing graph classification
         "--cuda", args.cuda,
-        "--explainer-suffix"
     ]
 
     if args.gpu:
