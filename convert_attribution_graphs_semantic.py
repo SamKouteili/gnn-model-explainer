@@ -69,29 +69,23 @@ class SemanticAttributionGraphConverter:
 
         # Separate the feature field by type to avoid mixed semantics
         if feature_type == 'cross layer transcoder':
-            # Normalize feature index to reasonable range
+            # Preserve original feature_id without clamping
             if feature_val is not None:
                 normalized_val = float(feature_val) / 1000.0
-                # Ensure no extreme values that could cause NaN
-                normalized_val = max(min(normalized_val, 100.0), -100.0)
                 features.append(normalized_val)
             else:
                 features.append(0.0)
         elif feature_type == 'embedding':
-            # Token position - keep as is (small values)
+            # Token position - preserve original values
             if feature_val is not None:
                 val = float(feature_val)
-                # Clamp to reasonable range
-                val = max(min(val, 10000.0), -10000.0)
                 features.append(val)
             else:
                 features.append(0.0)
         elif feature_type == 'logit':
-            # Vocabulary ID - normalize to reasonable range
+            # Preserve original feature_id without clamping
             if feature_val is not None:
                 normalized_val = float(feature_val) / 10000.0
-                # Ensure no extreme values
-                normalized_val = max(min(normalized_val, 100.0), -100.0)
                 features.append(normalized_val)
             else:
                 features.append(0.0)
@@ -269,11 +263,13 @@ def load_attribution_graphs_semantic(
                 cached_data = pickle.load(f)
             return cached_data["graphs"], cached_data["labels"]
         except (EOFError, pickle.UnpicklingError, KeyError) as e:
-            logger.warning(f"Cache file {cache_file} is corrupted ({e}), regenerating...")
+            logger.warning(
+                f"Cache file {cache_file} is corrupted ({e}), regenerating...")
             # Remove corrupted cache file
             cache_file.unlink()
         except Exception as e:
-            logger.warning(f"Failed to load cache file {cache_file} ({e}), regenerating...")
+            logger.warning(
+                f"Failed to load cache file {cache_file} ({e}), regenerating...")
             # Remove problematic cache file
             cache_file.unlink()
 
