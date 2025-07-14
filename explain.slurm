@@ -40,4 +40,7 @@ conda activate circuit
 
 echo "=== STARTING EXPLAINING ==="
 # Run training with the local dataset - small model, reasonable resources
-python explain_attribution_graphs.py --gpu
+python explain_attribution_graphs.py \
+      --multigraph-class 1 \
+      --explainer-suffix "injected_patterns" \
+      --gpu
