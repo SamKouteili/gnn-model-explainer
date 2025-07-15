@@ -142,6 +142,7 @@ class DetailedNodeAnalyzer:
         
         # Try to find cached graphs to get node mappings
         possible_cache_dirs = [
+            "/home/sk2959/scratch_pi_rp476/sk2959/gnn_explainer_cache_semantic",
             "/home/sk2959/palmer_scratch/gnn_explainer_cache_semantic",
             "../gnn_explainer_cache_semantic", 
             "gnn_explainer_cache_semantic",
@@ -276,22 +277,34 @@ class DetailedNodeAnalyzer:
             return {}
         
         # Group by node type
-        type_analysis = df.groupby('node_type').agg({
+        agg_dict = {
             'total_influence': ['count', 'mean', 'sum', 'std'],
             'total_connections': ['mean', 'sum'],
-            'layer_feat': 'mean',
             'pos_out_influence': 'mean',
             'neg_out_influence': 'mean'
-        }).round(4)
+        }
+        
+        # Add layer column if it exists
+        if 'layer_feat' in df.columns:
+            agg_dict['layer_feat'] = 'mean'
+        elif 'original_layer' in df.columns:
+            agg_dict['original_layer'] = 'mean'
+            
+        type_analysis = df.groupby('node_type').agg(agg_dict).round(4)
         
         print("Importance by node type:")
         print(type_analysis)
         
         # Analyze layer distribution
         print("\\nLayer distribution by node type:")
-        layer_dist = df.groupby(['node_type', 'layer_feat']).size().unstack(fill_value=0)
-        print(layer_dist)
+        layer_col = 'layer_feat' if 'layer_feat' in df.columns else 'original_layer'
+        if layer_col in df.columns:
+            layer_dist = df.groupby(['node_type', layer_col]).size().unstack(fill_value=0)
+            print(layer_dist)
+        else:
+            print("No layer information available")
         
+        layer_dist = layer_dist if layer_col in df.columns else None
         return {
             'type_analysis': type_analysis,
             'layer_distribution': layer_dist
