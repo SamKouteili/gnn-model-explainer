@@ -185,11 +185,19 @@ def enrich_analysis_with_neuronpedia(df: pd.DataFrame, client: NeuronpediaClient
         return df
     
     # We'll use the processed feature information and reverse the normalization
-    if 'layer_feat' not in df.columns or 'processed_feature_id' not in df.columns:
-        print(f"WARNING: Required processed feature columns not found. Available: {list(df.columns)}")
+    # Check for layer column - could be 'layer_feat' or 'original_layer'
+    if 'layer_feat' in df.columns:
+        layer_col = 'layer_feat'
+    elif 'original_layer' in df.columns:
+        layer_col = 'original_layer'
+    else:
+        print(f"WARNING: No layer column found. Available: {list(df.columns)}")
         return df
     
-    layer_col = 'layer_feat'
+    if 'processed_feature_id' not in df.columns:
+        print(f"WARNING: processed_feature_id column not found. Available: {list(df.columns)}")
+        return df
+        
     processed_feature_col = 'processed_feature_id'
     
     # Extract transcoder features from analysis
