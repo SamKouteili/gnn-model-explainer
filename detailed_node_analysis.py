@@ -140,32 +140,40 @@ class DetailedNodeAnalyzer:
         adj_matrix = np.load(masked_files[0])
         print(f"Loaded adjacency matrix shape: {adj_matrix.shape}")
         
-        # Try to find cached graphs to get node mappings
-        possible_cache_dirs = [
-            "/home/sk2959/scratch_pi_rp476/sk2959/gnn_explainer_cache_semantic",
-            "/home/sk2959/palmer_scratch/gnn_explainer_cache_semantic",
-            "../gnn_explainer_cache_semantic", 
-            "gnn_explainer_cache_semantic",
-        ]
-        
+        # Load node mappings directly from explainer output JSON (no cache needed!)
         node_mapping = []
-        for cache_dir in possible_cache_dirs:
-            cache_path = Path(cache_dir)
-            if cache_path.exists():
-                cache_files = list(cache_path.glob("*.pkl"))
-                if cache_files:
-                    with open(cache_files[0], 'rb') as f:
-                        cached_data = pickle.load(f)
+        results_json = self.log_dir / "detailed_node_analysis_results.json"
+        
+        if results_json.exists():
+            print(f"Loading node mappings from explainer output: {results_json}")
+            with open(results_json, 'r') as f:
+                results = json.load(f)
+            
+            # Extract node mappings from the saved results
+            if 'nodes' in results:
+                for node_data in results['nodes']:
+                    # Convert back to the format expected by analyze_important_nodes
+                    features = [
+                        node_data.get('influence_feat', 0.0),
+                        node_data.get('activation_feat', 0.0),
+                        node_data.get('layer_feat', 0),
+                        node_data.get('ctx_idx_feat', 0),
+                        node_data.get('processed_feature_id', 0.0),
+                        1.0 if node_data.get('is_transcoder', False) else 0.0,
+                        1.0 if node_data.get('is_mlp_error', False) else 0.0,
+                        1.0 if node_data.get('is_embedding', False) else 0.0,
+                        1.0 if node_data.get('is_target_logit', False) else 0.0,
+                    ]
                     
-                    # Get node mappings from the first graph
-                    if cached_data['graphs']:
-                        first_graph = cached_data['graphs'][0]
-                        for node_id in first_graph.nodes():
-                            node_mapping.append({
-                                'graph_node_id': node_id,
-                                'features': first_graph.nodes[node_id]['feat']
-                            })
-                    break
+                    node_mapping.append({
+                        'graph_node_id': node_data.get('node_idx', 0),
+                        'features': features
+                    })
+                    
+            print(f"Loaded {len(node_mapping)} node mappings from explainer results")
+        else:
+            print(f"Explainer results JSON not found at {results_json}")
+            print("Cannot proceed without node semantic information")
         
         print(f"Found {len(node_mapping)} node mappings")
         return adj_matrix, node_mapping
