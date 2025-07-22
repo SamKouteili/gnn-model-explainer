@@ -141,7 +141,7 @@ class DetailedNodeAnalyzer:
         print(f"Loaded adjacency matrix shape: {adj_matrix.shape}")
         
         # Load node mappings directly from explainer output JSON (no cache needed!)
-        node_mapping = []
+        node_mapping_dict = {}  # Map node_id -> node_data
         results_json = self.log_dir / "detailed_node_analysis_results.json"
         
         if results_json.exists():
@@ -149,36 +149,21 @@ class DetailedNodeAnalyzer:
             with open(results_json, 'r') as f:
                 results = json.load(f)
             
-            # Extract node mappings from the saved results
+            # Create a dictionary mapping node_idx to node data
             if 'top_nodes' in results:
                 for node_data in results['top_nodes']:
-                    # Convert back to the format expected by analyze_important_nodes
-                    features = [
-                        node_data.get('influence_feat', 0.0),
-                        node_data.get('activation_feat', 0.0),
-                        node_data.get('layer_feat', 0),
-                        node_data.get('ctx_idx_feat', 0),
-                        node_data.get('processed_feature_id', 0.0),
-                        1.0 if node_data.get('is_transcoder', False) else 0.0,
-                        1.0 if node_data.get('is_mlp_error', False) else 0.0,
-                        1.0 if node_data.get('is_embedding', False) else 0.0,
-                        1.0 if node_data.get('is_target_logit', False) else 0.0,
-                    ]
+                    node_idx = node_data.get('node_idx', 0)
+                    node_mapping_dict[node_idx] = node_data
                     
-                    node_mapping.append({
-                        'graph_node_id': node_data.get('node_idx', 0),
-                        'features': features
-                    })
-                    
-            print(f"Loaded {len(node_mapping)} node mappings from explainer results")
+            print(f"Loaded {len(node_mapping_dict)} node mappings from explainer results")
         else:
             print(f"Explainer results JSON not found at {results_json}")
             print("Cannot proceed without node semantic information")
         
-        print(f"Found {len(node_mapping)} node mappings")
-        return adj_matrix, node_mapping
+        print(f"Found {len(node_mapping_dict)} node mappings")
+        return adj_matrix, node_mapping_dict
     
-    def analyze_important_nodes(self, adj_matrix: np.ndarray, node_mapping: List[Dict]) -> pd.DataFrame:
+    def analyze_important_nodes(self, adj_matrix: np.ndarray, node_mapping: Dict[int, Dict]) -> pd.DataFrame:
         """Analyze which specific nodes are most important in the explanation"""
         print("\\n=== IMPORTANT NODE ANALYSIS ===")
         
@@ -227,36 +212,24 @@ class DetailedNodeAnalyzer:
                 'node_type': 'unknown'
             })
             
-            # Add processed feature information if available
-            if i < len(node_mapping):
-                features = node_mapping[i]['features']
+            # Add processed feature information if available in the mapping
+            if i in node_mapping:
+                node_data = node_mapping[i]
                 node_info.update({
-                    'influence_feat': features[0],
-                    'activation_feat': features[1], 
-                    'layer_feat': int(features[2]),
-                    'ctx_idx_feat': int(features[3]),
-                    'processed_feature_id': features[4],
-                    'is_transcoder': bool(features[5]),
-                    'is_mlp_error': bool(features[6]),
-                    'is_embedding': bool(features[7]),
-                    'is_target_logit': bool(features[8])
+                    'influence_feat': node_data.get('influence_feat', 0.0),
+                    'activation_feat': node_data.get('activation_feat', 0.0), 
+                    'layer_feat': int(node_data.get('layer_feat', 0)),
+                    'ctx_idx_feat': int(node_data.get('ctx_idx_feat', 0)),
+                    'processed_feature_id': node_data.get('processed_feature_id', 0.0),
+                    'is_transcoder': node_data.get('is_transcoder', False),
+                    'is_mlp_error': node_data.get('is_mlp_error', False),
+                    'is_embedding': node_data.get('is_embedding', False),
+                    'is_target_logit': node_data.get('is_target_logit', False)
                 })
                 
                 # Use processed feature information to set feature_id
-                # This will be reverse-normalized later in neuronpedia_integration.py
-                node_info['feature_id'] = features[4]  # Use processed feature ID
-                
-                # Determine node type from processed features
-                if features[5] > 0.5:
-                    node_info['node_type'] = 'transcoder'
-                elif features[6] > 0.5:
-                    node_info['node_type'] = 'mlp_error'
-                elif features[7] > 0.5:
-                    node_info['node_type'] = 'embedding'
-                elif features[8] > 0.5:
-                    node_info['node_type'] = 'target_logit'
-                else:
-                    node_info['node_type'] = 'unknown'
+                node_info['feature_id'] = node_data.get('processed_feature_id', 0.0)
+                node_info['node_type'] = node_data.get('node_type', 'unknown')
             
             node_importance.append(node_info)
         
