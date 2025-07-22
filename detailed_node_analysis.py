@@ -150,8 +150,8 @@ class DetailedNodeAnalyzer:
                 results = json.load(f)
             
             # Extract node mappings from the saved results
-            if 'nodes' in results:
-                for node_data in results['nodes']:
+            if 'top_nodes' in results:
+                for node_data in results['top_nodes']:
                     # Convert back to the format expected by analyze_important_nodes
                     features = [
                         node_data.get('influence_feat', 0.0),

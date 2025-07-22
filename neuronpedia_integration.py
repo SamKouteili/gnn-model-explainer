@@ -154,14 +154,9 @@ class NeuronpediaClient:
 def reverse_feature_normalization(processed_feature_id: float, feature_type: str) -> int:
     """Reverse the feature normalization done in semantic converter"""
     if feature_type == 'cross layer transcoder':
-        # Was normalized as: feature_val / 1000.0, clamped to [-100, 100]
-        if processed_feature_id >= 100.0:
-            # This was a large feature that got clamped, we can't recover the exact value
-            # But we know it was >= 100000. Let's skip these for now.
-            return None
-        else:
-            # Reverse the normalization
-            return int(processed_feature_id * 1000)
+        # Was normalized as: feature_val / 1000.0 (no more clamping)
+        # Reverse the normalization
+        return int(processed_feature_id * 1000)
     elif feature_type == 'embedding':
         # Was kept as-is for small values
         return int(processed_feature_id)
