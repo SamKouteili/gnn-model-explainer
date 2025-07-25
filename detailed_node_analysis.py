@@ -1,515 +1,335 @@
 #!/usr/bin/env python3
 """
-Detailed Analysis of GNN Explainer Results with Node-Level Insights
-This script analyzes the explainer output to understand specific nodes and patterns
-the model learned to distinguish injected from benign graphs.
+Detailed Analysis of GNN Explainer Results with Neuronpedia Integration
+
+This script extracts the most important nodes from GNN explainer outputs,
+enriches them with semantic information from the source graphs, and 
+retrieves interpretations from Neuronpedia.
 """
 
-import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pathlib import Path
-import pickle
 import json
-from typing import Dict, List, Tuple, Any, Optional
+import numpy as np
 import pandas as pd
-import networkx as nx
-from collections import Counter, defaultdict
-import sys
-sys.path.append('.')
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
+from neuronpedia_integration import NeuronpediaClient
 
-# Import our semantic converter
-from convert_attribution_graphs_semantic import SemanticAttributionGraphConverter
-
-# Import Neuronpedia integration
-try:
-    from neuronpedia_integration import NeuronpediaClient, enrich_analysis_with_neuronpedia, create_interpretation_report
-    NEURONPEDIA_AVAILABLE = True
-except ImportError:
-    NEURONPEDIA_AVAILABLE = False
-    print("Neuronpedia integration not available. Install requests to enable feature interpretations.")
 
 class DetailedNodeAnalyzer:
     def __init__(self, log_dir: str = "log", data_dir: str = "data_small"):
         self.log_dir = Path(log_dir)
         self.data_dir = Path(data_dir)
-        self.converter = SemanticAttributionGraphConverter()
+        self.client = NeuronpediaClient()
         
-        # Feature interpretation
-        self.feature_names = [
-            'influence', 'activation', 'layer', 'ctx_idx', 'feature',
-            'is_cross_layer_transcoder', 'is_mlp_error', 'is_embedding', 'is_target_logit'
-        ]
+    def load_explainer_results(self) -> Tuple[np.ndarray, Dict]:
+        """Load masked adjacency matrix and node mappings from explainer output"""
+        print("=== Loading Explainer Results ===")
         
-        # Node type mappings
-        self.node_type_map = {
-            'cross layer transcoder': 'Transcoder Feature',
-            'mlp reconstruction error': 'MLP Error',
-            'embedding': 'Token Embedding',
-            'logit': 'Output Logit',
-            'unknown': 'Unknown'
-        }
-        
-    def load_and_analyze_original_graphs(self) -> Tuple[List[Dict], List[Dict]]:
-        """Load original JSON graphs to understand node semantics"""
-        print("=== LOADING ORIGINAL GRAPHS ===")
-        
-        benign_graphs = []
-        injected_graphs = []
-        
-        # Load benign graphs
-        benign_dir = self.data_dir / "benign"
-        if benign_dir.exists():
-            for json_file in sorted(benign_dir.glob("*.json")):
-                try:
-                    with open(json_file, 'r') as f:
-                        data = json.load(f)
-                    benign_graphs.append(data)
-                except Exception as e:
-                    print(f"Error loading {json_file}: {e}")
-        
-        # Load injected graphs  
-        injected_dir = self.data_dir / "injected"
-        if injected_dir.exists():
-            for json_file in sorted(injected_dir.glob("*.json")):
-                try:
-                    with open(json_file, 'r') as f:
-                        data = json.load(f)
-                    injected_graphs.append(data)
-                except Exception as e:
-                    print(f"Error loading {json_file}: {e}")
-        
-        print(f"Loaded {len(benign_graphs)} benign and {len(injected_graphs)} injected graphs")
-        return benign_graphs, injected_graphs
-    
-    def analyze_node_types(self, benign_graphs: List[Dict], injected_graphs: List[Dict]) -> Dict:
-        """Analyze node type distributions between benign and injected graphs"""
-        print("\\n=== NODE TYPE ANALYSIS ===")
-        
-        def count_node_types(graphs, label):
-            type_counts = Counter()
-            layer_counts = defaultdict(Counter)
-            feature_counts = defaultdict(Counter)
-            
-            for graph in graphs:
-                nodes = graph.get("nodes", [])
-                for node in nodes:
-                    feature_type = node.get("feature_type", "unknown")
-                    layer = node.get("layer", "unknown")
-                    feature_id = node.get("feature", "unknown")
-                    
-                    type_counts[feature_type] += 1
-                    layer_counts[feature_type][layer] += 1
-                    if feature_type == "cross layer transcoder":
-                        feature_counts[layer][feature_id] += 1
-            
-            return type_counts, layer_counts, feature_counts
-        
-        benign_types, benign_layers, benign_features = count_node_types(benign_graphs, "benign")
-        injected_types, injected_layers, injected_features = count_node_types(injected_graphs, "injected")
-        
-        print("Node type distributions:")
-        print(f"{'Type':<25} {'Benign':<10} {'Injected':<10} {'Difference':<10}")
-        print("-" * 60)
-        
-        all_types = set(benign_types.keys()) | set(injected_types.keys())
-        for node_type in sorted(all_types):
-            b_count = benign_types.get(node_type, 0)
-            i_count = injected_types.get(node_type, 0)
-            diff = i_count - b_count
-            print(f"{node_type:<25} {b_count:<10} {i_count:<10} {diff:<10}")
-        
-        return {
-            'benign_types': benign_types,
-            'injected_types': injected_types,
-            'benign_layers': benign_layers,
-            'injected_layers': injected_layers,
-            'benign_features': benign_features,
-            'injected_features': injected_features
-        }
-    
-    def load_masked_adjacency_with_mapping(self) -> Tuple[np.ndarray, List[Dict]]:
-        """Load masked adjacency matrix and create node mapping"""
-        print("\\n=== LOADING MASKED ADJACENCY WITH NODE MAPPING ===")
-        
-        # Find the masked adjacency file
+        # Load masked adjacency matrix
         masked_files = list(self.log_dir.glob("masked_adj_*.npy"))
         if not masked_files:
-            raise FileNotFoundError("No masked adjacency files found")
+            raise FileNotFoundError(f"No masked adjacency files found in {self.log_dir}")
         
         adj_matrix = np.load(masked_files[0])
-        print(f"Loaded adjacency matrix shape: {adj_matrix.shape}")
+        print(f"Loaded adjacency matrix: {adj_matrix.shape}")
         
-        # Load node mappings directly from explainer output JSON (no cache needed!)
-        node_mapping_dict = {}  # Map node_id -> node_data
+        # Load node mappings from explainer output
         results_json = self.log_dir / "detailed_node_analysis_results.json"
+        node_mapping = {}
         
         if results_json.exists():
-            print(f"Loading node mappings from explainer output: {results_json}")
             with open(results_json, 'r') as f:
                 results = json.load(f)
             
-            # Create a dictionary mapping node_idx to node data
             if 'top_nodes' in results:
                 for node_data in results['top_nodes']:
                     node_idx = node_data.get('node_idx', 0)
-                    node_mapping_dict[node_idx] = node_data
+                    node_mapping[node_idx] = node_data
                     
-            print(f"Loaded {len(node_mapping_dict)} node mappings from explainer results")
+            print(f"Loaded {len(node_mapping)} node mappings")
         else:
-            print(f"Explainer results JSON not found at {results_json}")
-            print("Cannot proceed without node semantic information")
+            raise FileNotFoundError(f"Explainer results not found at {results_json}")
         
-        print(f"Found {len(node_mapping_dict)} node mappings")
-        return adj_matrix, node_mapping_dict
+        return adj_matrix, node_mapping
     
-    def analyze_important_nodes(self, adj_matrix: np.ndarray, node_mapping: Dict[int, Dict]) -> pd.DataFrame:
-        """Analyze which specific nodes are most important in the explanation"""
-        print("\\n=== IMPORTANT NODE ANALYSIS ===")
+    def calculate_node_importance(self, adj_matrix: np.ndarray, 
+                                node_mapping: Dict) -> pd.DataFrame:
+        """Calculate importance metrics for each node"""
+        print("=== Calculating Node Importance ===")
         
-        # Skip the complex node mapping - use processed feature information instead
-        print("Using processed feature information directly (more reliable than mapping back to original JSON)")
-        
-        # Calculate node importance metrics
-        node_importance = []
+        node_data = []
         
         for i in range(adj_matrix.shape[0]):
-            # Total influence (sum of absolute weights)
+            # Calculate influence metrics
             in_influence = np.sum(np.abs(adj_matrix[:, i]))
             out_influence = np.sum(np.abs(adj_matrix[i, :]))
             total_influence = in_influence + out_influence
             
-            # Positive vs negative influence
-            pos_in = np.sum(adj_matrix[adj_matrix[:, i] > 0, i])
-            neg_in = np.sum(adj_matrix[adj_matrix[:, i] < 0, i])
-            pos_out = np.sum(adj_matrix[i, adj_matrix[i, :] > 0])
-            neg_out = np.sum(adj_matrix[i, adj_matrix[i, :] < 0])
-            
             # Connection counts
             in_connections = np.count_nonzero(adj_matrix[:, i])
             out_connections = np.count_nonzero(adj_matrix[i, :])
+            total_connections = in_connections + out_connections
             
             node_info = {
                 'node_idx': i,
                 'total_influence': total_influence,
                 'in_influence': in_influence,
                 'out_influence': out_influence,
-                'pos_in_influence': pos_in,
-                'neg_in_influence': neg_in,
-                'pos_out_influence': pos_out,
-                'neg_out_influence': neg_out,
+                'total_connections': total_connections,
                 'in_connections': in_connections,
-                'out_connections': out_connections,
-                'total_connections': in_connections + out_connections
+                'out_connections': out_connections
             }
             
-            # Initialize with defaults
-            node_info.update({
-                'feature_id': 'unknown',
-                'node_id': f'node_{i}',
-                'original_layer': 'unknown',
-                'original_ctx_idx': 'unknown',
-                'node_type': 'unknown'
-            })
-            
-            # Add processed feature information if available in the mapping
+            # Add explainer-derived information if available
             if i in node_mapping:
-                node_data = node_mapping[i]
+                mapped_data = node_mapping[i]
                 node_info.update({
-                    'influence_feat': node_data.get('influence_feat', 0.0),
-                    'activation_feat': node_data.get('activation_feat', 0.0), 
-                    'layer_feat': int(node_data.get('layer_feat', 0)),
-                    'ctx_idx_feat': int(node_data.get('ctx_idx_feat', 0)),
-                    'processed_feature_id': node_data.get('processed_feature_id', 0.0),
-                    'is_transcoder': node_data.get('is_transcoder', False),
-                    'is_mlp_error': node_data.get('is_mlp_error', False),
-                    'is_embedding': node_data.get('is_embedding', False),
-                    'is_target_logit': node_data.get('is_target_logit', False)
+                    'layer': mapped_data.get('layer_feat'),
+                    'feature_id': mapped_data.get('processed_feature_id'),
+                    'node_type': mapped_data.get('node_type', 'unknown'),
+                    'activation': mapped_data.get('activation_feat'),
+                    'ctx_idx': mapped_data.get('ctx_idx_feat')
                 })
-                
-                # Use processed feature information to set feature_id
-                node_info['feature_id'] = node_data.get('processed_feature_id', 0.0)
-                node_info['node_type'] = node_data.get('node_type', 'unknown')
+            else:
+                # Set defaults for unmapped nodes
+                node_info.update({
+                    'layer': None,
+                    'feature_id': None,
+                    'node_type': 'unknown',
+                    'activation': None,
+                    'ctx_idx': None
+                })
             
-            node_importance.append(node_info)
+            node_data.append(node_info)
         
-        df = pd.DataFrame(node_importance)
+        df = pd.DataFrame(node_data)
         df = df.sort_values('total_influence', ascending=False)
         
-        print(f"Created DataFrame with {len(df)} nodes and columns: {list(df.columns)}")
-        print("Top 20 most important nodes:")
-        # Show original feature IDs and node information
-        display_cols = ['node_idx', 'node_type', 'total_influence', 'original_layer', 'feature_id', 'node_id', 'total_connections']
-        available_cols = [col for col in display_cols if col in df.columns]
-        
-        if available_cols:
-            print(df[available_cols].head(20))
-        else:
-            print(df[['node_idx', 'total_influence', 'total_connections']].head(20))
-        
+        print(f"Calculated importance for {len(df)} nodes")
         return df
     
-    def analyze_node_type_importance(self, df: pd.DataFrame) -> Dict:
-        """Analyze importance by node type"""
-        print("\\n=== NODE TYPE IMPORTANCE ANALYSIS ===")
+    def load_source_graph_data(self, graph_path: str) -> Dict:
+        """Load node data from source attribution graph"""
+        graph_file = Path(graph_path)
         
-        if 'node_type' not in df.columns:
-            print("Node type information not available")
-            return {}
+        if not graph_file.exists():
+            raise FileNotFoundError(f"Source graph not found: {graph_path}")
         
-        # Group by node type
-        agg_dict = {
-            'total_influence': ['count', 'mean', 'sum', 'std'],
-            'total_connections': ['mean', 'sum'],
-            'pos_out_influence': 'mean',
-            'neg_out_influence': 'mean'
-        }
+        with open(graph_file, 'r') as f:
+            graph_data = json.load(f)
         
-        # Add layer column if it exists
-        if 'layer_feat' in df.columns:
-            agg_dict['layer_feat'] = 'mean'
-        elif 'original_layer' in df.columns:
-            agg_dict['original_layer'] = 'mean'
+        return graph_data
+    
+    def is_valid_for_neuronpedia(self, node: Dict) -> bool:
+        """Check if a node is valid for Neuronpedia lookup"""
+        layer = node.get('layer')
+        feature_id = node.get('feature_id')
+        node_type = node.get('node_type')
+        
+        # Must have valid layer and feature_id
+        if layer is None or feature_id is None:
+            return False
             
-        type_analysis = df.groupby('node_type').agg(agg_dict).round(4)
-        
-        print("Importance by node type:")
-        print(type_analysis)
-        
-        # Analyze layer distribution
-        print("\\nLayer distribution by node type:")
-        layer_col = 'layer_feat' if 'layer_feat' in df.columns else 'original_layer'
-        if layer_col in df.columns:
-            layer_dist = df.groupby(['node_type', layer_col]).size().unstack(fill_value=0)
-            print(layer_dist)
-        else:
-            print("No layer information available")
-        
-        layer_dist = layer_dist if layer_col in df.columns else None
-        return {
-            'type_analysis': type_analysis,
-            'layer_distribution': layer_dist
-        }
-    
-    def analyze_critical_pathways(self, adj_matrix: np.ndarray, node_df: pd.DataFrame) -> Dict:
-        """Analyze critical pathways in the attribution graph"""
-        print("\\n=== CRITICAL PATHWAY ANALYSIS ===")
-        
-        # Find strongest connections
-        strong_edges = []
-        threshold = np.percentile(np.abs(adj_matrix[adj_matrix != 0]), 90)  # Top 10% of edges
-        
-        for i in range(adj_matrix.shape[0]):
-            for j in range(adj_matrix.shape[1]):
-                if abs(adj_matrix[i, j]) > threshold:
-                    source_type = node_df.iloc[j].get('node_type', 'unknown') if j < len(node_df) else 'unknown'
-                    target_type = node_df.iloc[i].get('node_type', 'unknown') if i < len(node_df) else 'unknown'
-                    
-                    strong_edges.append({
-                        'source': j,
-                        'target': i,
-                        'weight': adj_matrix[i, j],
-                        'abs_weight': abs(adj_matrix[i, j]),
-                        'source_type': source_type,
-                        'target_type': target_type,
-                        'edge_type': f"{source_type} -> {target_type}"
-                    })
-        
-        edge_df = pd.DataFrame(strong_edges)
-        
-        print(f"Found {len(strong_edges)} strong connections (>{threshold:.4f})")
-        
-        if not edge_df.empty:
-            print("\\nTop edge types by count:")
-            edge_type_counts = edge_df['edge_type'].value_counts()
-            print(edge_type_counts.head(10))
+        # Skip invalid layers
+        if layer in [0, "0", "E"] or not str(layer).isdigit():
+            return False
             
-            print("\\nStrongest individual edges:")
-            top_edges = edge_df.nlargest(10, 'abs_weight')
-            print(top_edges[['source', 'target', 'weight', 'edge_type']])
+        # Skip invalid node types
+        if node_type in ['mlp reconstruction error', 'embedding', 'unknown']:
+            return False
+            
+        # Feature ID must be in valid range for 16k SAEs
+        if feature_id <= 0 or feature_id > 16384:
+            return False
+            
+        return True
+    
+    def get_neuronpedia_interpretation(self, layer: int, feature_id: int, 
+                                     feature_type: str) -> Optional[Dict]:
+        """Get interpretation from Neuronpedia for a specific feature"""
         
-        return {
-            'strong_edges': strong_edges,
-            'edge_types': edge_type_counts.to_dict() if not edge_df.empty else {},
-            'threshold': threshold
+        # Map feature type to SAE type
+        sae_type_mapping = {
+            'cross layer transcoder': 'transcoder',
+            'embedding': 'res',
+            'logit': 'res'
         }
-    
-    def create_detailed_visualizations(self, node_df: pd.DataFrame, pathway_analysis: Dict):
-        """Create detailed visualizations of the analysis"""
-        print("\\n=== CREATING DETAILED VISUALIZATIONS ===")
         
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        primary_sae_type = sae_type_mapping.get(feature_type, 'transcoder')
+        sae_types_to_try = [primary_sae_type, 'res', 'att', 'transcoder']
         
-        # 1. Node type distribution
-        if 'node_type' in node_df.columns:
-            type_counts = node_df['node_type'].value_counts()
-            axes[0,0].pie(type_counts.values, labels=type_counts.index, autopct='%1.1f%%')
-            axes[0,0].set_title('Node Type Distribution')
-        else:
-            axes[0,0].text(0.5, 0.5, 'Node type\\ninformation\\nnot available', 
-                          ha='center', va='center', transform=axes[0,0].transAxes)
-            axes[0,0].set_title('Node Type Distribution')
-        
-        # 2. Influence by node type
-        if 'node_type' in node_df.columns:
-            sns.boxplot(data=node_df, x='node_type', y='total_influence', ax=axes[0,1])
-            axes[0,1].set_title('Influence Distribution by Node Type')
-            axes[0,1].tick_params(axis='x', rotation=45)
-        else:
-            axes[0,1].hist(node_df['total_influence'], bins=50, alpha=0.7)
-            axes[0,1].set_title('Overall Influence Distribution')
-        
-        # 3. Layer distribution
-        if 'layer_feat' in node_df.columns:
-            layer_counts = node_df['layer_feat'].value_counts().sort_index()
-            axes[0,2].bar(layer_counts.index, layer_counts.values)
-            axes[0,2].set_title('Important Nodes by Layer')
-            axes[0,2].set_xlabel('Layer')
-            axes[0,2].set_ylabel('Count')
-        else:
-            axes[0,2].text(0.5, 0.5, 'Layer\\ninformation\\nnot available', 
-                          ha='center', va='center', transform=axes[0,2].transAxes)
-        
-        # 4. Edge type distribution
-        if pathway_analysis['edge_types']:
-            edge_types = list(pathway_analysis['edge_types'].keys())[:10]
-            edge_counts = [pathway_analysis['edge_types'][et] for et in edge_types]
-            axes[1,0].barh(edge_types, edge_counts)
-            axes[1,0].set_title('Top Edge Types in Critical Pathways')
-            axes[1,0].set_xlabel('Count')
-        else:
-            axes[1,0].text(0.5, 0.5, 'Edge type\\ninformation\\nnot available', 
-                          ha='center', va='center', transform=axes[1,0].transAxes)
-        
-        # 5. Positive vs negative influence
-        if 'pos_out_influence' in node_df.columns and 'neg_out_influence' in node_df.columns:
-            axes[1,1].scatter(node_df['pos_out_influence'], node_df['neg_out_influence'], 
-                             alpha=0.6, s=20)
-            axes[1,1].set_xlabel('Positive Outgoing Influence')
-            axes[1,1].set_ylabel('Negative Outgoing Influence')
-            axes[1,1].set_title('Positive vs Negative Influence')
-            axes[1,1].axhline(y=0, color='red', linestyle='--', alpha=0.5)
-            axes[1,1].axvline(x=0, color='red', linestyle='--', alpha=0.5)
-        else:
-            axes[1,1].text(0.5, 0.5, 'Influence\\nbreakdown\\nnot available', 
-                          ha='center', va='center', transform=axes[1,1].transAxes)
-        
-        # 6. Top nodes by influence
-        top_nodes = node_df.head(20)
-        axes[1,2].barh(range(len(top_nodes)), top_nodes['total_influence'])
-        axes[1,2].set_title('Top 20 Nodes by Influence')
-        axes[1,2].set_xlabel('Total Influence')
-        axes[1,2].set_yticks(range(len(top_nodes)))
-        axes[1,2].set_yticklabels([f"Node {idx}" for idx in top_nodes['node_idx']])
-        
-        plt.tight_layout()
-        plt.savefig(self.log_dir / 'detailed_node_analysis.png', dpi=300, bbox_inches='tight')
-        print(f"Visualization saved to: {self.log_dir / 'detailed_node_analysis.png'}")
-        
-        return fig
-    
-    def run_full_analysis(self):
-        """Run the complete detailed analysis"""
-        print("="*80)
-        print("DETAILED NODE-LEVEL EXPLAINER ANALYSIS")
-        print("="*80)
-        
-        # 1. Load original graphs
-        benign_graphs, injected_graphs = self.load_and_analyze_original_graphs()
-        
-        # 2. Analyze node types
-        node_type_analysis = self.analyze_node_types(benign_graphs, injected_graphs)
-        
-        # 3. Load masked adjacency with node mapping
-        adj_matrix, node_mapping = self.load_masked_adjacency_with_mapping()
-        
-        # 4. Analyze important nodes
-        node_df = self.analyze_important_nodes(adj_matrix, node_mapping)
-        
-        # 5. Analyze node type importance
-        type_importance = self.analyze_node_type_importance(node_df)
-        
-        # 6. Analyze critical pathways
-        pathway_analysis = self.analyze_critical_pathways(adj_matrix, node_df)
-        
-        # 7. Enrich with Neuronpedia interpretations (if available)
-        if NEURONPEDIA_AVAILABLE:
-            print("\\n=== ENRICHING WITH NEURONPEDIA INTERPRETATIONS ===")
+        for sae_type in sae_types_to_try:
             try:
-                client = NeuronpediaClient()
-                node_df = enrich_analysis_with_neuronpedia(node_df, client)
+                interpretation = self.client.get_feature_interpretation(
+                    layer, int(feature_id), sae_type)
                 
-                # Create interpretation report
-                create_interpretation_report(node_df, self.log_dir / "feature_interpretations.html")
-                print(f"Feature interpretation report saved to: {self.log_dir / 'feature_interpretations.html'}")
+                if (interpretation and 
+                    (interpretation.description != "No description available" or 
+                     interpretation.explanation)):
+                    
+                    return {
+                        'description': interpretation.description,
+                        'explanation': interpretation.explanation,
+                        'score': interpretation.auto_interp_score,
+                        'sae_type': sae_type,
+                        'top_tokens': [
+                            f"{logit['token']} ({logit['logit_diff']:.3f})" 
+                            for logit in (interpretation.top_logits or [])[:3]
+                        ]
+                    }
+            except Exception:
+                continue
                 
-            except Exception as e:
-                print(f"Neuronpedia enrichment failed: {e}")
-                print("Continuing without interpretations...")
-        else:
-            print("\\nNeuronpedia integration not available. Skipping feature interpretations.")
+        return None
+    
+    def enrich_with_neuronpedia(self, df: pd.DataFrame, 
+                              max_nodes: int = 20) -> pd.DataFrame:
+        """Enrich top nodes with Neuronpedia interpretations"""
+        print(f"=== Enriching Top {max_nodes} Nodes with Neuronpedia ===")
         
-        # 8. Create visualizations
-        fig = self.create_detailed_visualizations(node_df, pathway_analysis)
+        # Initialize interpretation columns
+        df['neuronpedia_description'] = None
+        df['neuronpedia_explanation'] = None
+        df['neuronpedia_score'] = None
+        df['neuronpedia_sae_type'] = None
+        df['neuronpedia_top_tokens'] = None
         
-        # 9. Save detailed results
-        results = {
-            'node_type_analysis': {k: dict(v) if hasattr(v, 'items') else v 
-                                 for k, v in node_type_analysis.items()},
-            'pathway_analysis': pathway_analysis,
-            'top_nodes': node_df.head(50).to_dict('records'),
-            'adjacency_stats': {
-                'shape': adj_matrix.shape,
-                'nonzero_edges': int(np.count_nonzero(adj_matrix)),
-                'sparsity': float(np.count_nonzero(adj_matrix) / adj_matrix.size)
-            }
-        }
+        enriched_count = 0
         
-        results_file = self.log_dir / 'detailed_node_analysis_results.json'
-        with open(results_file, 'w') as f:
-            json.dump(results, f, indent=2, default=str)
+        for idx, row in df.head(max_nodes).iterrows():
+            if not self.is_valid_for_neuronpedia(row):
+                continue
+                
+            print(f"  Checking node {row['node_idx']}: Layer {row['layer']}, "
+                  f"Feature {row['feature_id']}, Type {row['node_type']}")
+            
+            interpretation = self.get_neuronpedia_interpretation(
+                int(row['layer']), row['feature_id'], row['node_type'])
+            
+            if interpretation:
+                df.at[idx, 'neuronpedia_description'] = interpretation['description']
+                df.at[idx, 'neuronpedia_explanation'] = interpretation['explanation']
+                df.at[idx, 'neuronpedia_score'] = interpretation['score']
+                df.at[idx, 'neuronpedia_sae_type'] = interpretation['sae_type']
+                df.at[idx, 'neuronpedia_top_tokens'] = '; '.join(interpretation['top_tokens'])
+                
+                enriched_count += 1
+                print(f"    ✅ Found: {interpretation['description'][:60]}...")
+            else:
+                print(f"    ❌ No interpretation found")
         
-        print(f"\\nDetailed analysis complete! Results saved to: {results_file}")
+        print(f"Successfully enriched {enriched_count}/{max_nodes} nodes")
+        return df
+    
+    def create_summary_report(self, df: pd.DataFrame) -> str:
+        """Create a summary report of the analysis"""
+        report = []
+        report.append("=" * 80)
+        report.append("GNN EXPLAINER NODE ANALYSIS SUMMARY")
+        report.append("=" * 80)
         
-        return results
+        # Overall statistics
+        total_nodes = len(df)
+        interpreted_nodes = df['neuronpedia_description'].notna().sum()
+        
+        report.append(f"Total nodes analyzed: {total_nodes}")
+        report.append(f"Nodes with interpretations: {interpreted_nodes}")
+        report.append("")
+        
+        # Node type distribution
+        if 'node_type' in df.columns:
+            type_counts = df['node_type'].value_counts()
+            report.append("Node type distribution:")
+            for node_type, count in type_counts.items():
+                pct = (count / total_nodes) * 100
+                report.append(f"  {node_type}: {count} ({pct:.1f}%)")
+            report.append("")
+        
+        # Top interpreted nodes
+        interpreted_df = df[df['neuronpedia_description'].notna()]
+        if not interpreted_df.empty:
+            report.append("TOP INTERPRETED NODES:")
+            report.append("-" * 40)
+            
+            for i, (_, node) in enumerate(interpreted_df.head(10).iterrows(), 1):
+                desc = node['neuronpedia_description']
+                if len(desc) > 60:
+                    desc = desc[:57] + "..."
+                    
+                report.append(f"{i:2d}. Node {node['node_idx']} "
+                            f"(Layer {node['layer']}, Feature {node['feature_id']})")
+                report.append(f"    Type: {node['node_type']}")
+                report.append(f"    Influence: {node['total_influence']:.4f}")
+                report.append(f"    Description: {desc}")
+                if node['neuronpedia_top_tokens']:
+                    report.append(f"    Top tokens: {node['neuronpedia_top_tokens']}")
+                report.append("")
+        
+        return "\n".join(report)
+    
+    def save_results(self, df: pd.DataFrame, report: str):
+        """Save analysis results to files"""
+        # Save detailed DataFrame
+        csv_path = self.log_dir / "detailed_node_analysis_with_interpretations.csv"
+        df.to_csv(csv_path, index=False)
+        print(f"Detailed results saved to: {csv_path}")
+        
+        # Save summary report
+        report_path = self.log_dir / "node_analysis_summary.txt"
+        with open(report_path, 'w') as f:
+            f.write(report)
+        print(f"Summary report saved to: {report_path}")
+        
+        # Save top interpreted nodes as JSON for further analysis
+        interpreted_nodes = df[df['neuronpedia_description'].notna()]
+        if not interpreted_nodes.empty:
+            json_path = self.log_dir / "interpreted_nodes.json"
+            interpreted_data = interpreted_nodes.head(20).to_dict('records')
+            
+            with open(json_path, 'w') as f:
+                json.dump(interpreted_data, f, indent=2, default=str)
+            print(f"Interpreted nodes saved to: {json_path}")
+    
+    def run_analysis(self, max_nodes: int = 20) -> pd.DataFrame:
+        """Run the complete analysis pipeline"""
+        print("Starting GNN Explainer Node Analysis with Neuronpedia Integration")
+        print("=" * 80)
+        
+        # Load explainer results
+        adj_matrix, node_mapping = self.load_explainer_results()
+        
+        # Calculate node importance
+        df = self.calculate_node_importance(adj_matrix, node_mapping)
+        
+        # Show top nodes before enrichment
+        print(f"\nTop 10 nodes by influence:")
+        display_cols = ['node_idx', 'node_type', 'layer', 'feature_id', 
+                       'total_influence', 'total_connections']
+        available_cols = [col for col in display_cols if col in df.columns]
+        print(df[available_cols].head(10).to_string(index=False))
+        
+        # Enrich with Neuronpedia
+        df = self.enrich_with_neuronpedia(df, max_nodes)
+        
+        # Create and display summary
+        report = self.create_summary_report(df)
+        print("\n" + report)
+        
+        # Save results
+        self.save_results(df, report)
+        
+        return df
+
 
 def main():
     analyzer = DetailedNodeAnalyzer()
-    results = analyzer.run_full_analysis()
+    df = analyzer.run_analysis(max_nodes=20)
     
-    print("\\n" + "="*80)
-    print("SUMMARY OF KEY FINDINGS")
-    print("="*80)
-    
-    if results['adjacency_stats']:
-        stats = results['adjacency_stats']
-        print(f"Graph size: {stats['shape'][0]} nodes")
-        print(f"Important connections: {stats['nonzero_edges']} edges")
-        print(f"Sparsity: {stats['sparsity']:.6f}")
-    
-    if results['top_nodes']:
-        print(f"\\nTop 5 most important nodes:")
-        for i, node in enumerate(results['top_nodes'][:5]):
-            node_type = node.get('node_type', 'unknown')
-            layer = node.get('original_layer', node.get('layer_feat', 'unknown'))
-            feature_id = node.get('feature_id', 'unknown')
-            influence = node.get('total_influence', 0)
-            
-            # Add interpretation if available
-            interpretation = ""
-            if node.get('neuronpedia_description'):
-                desc = node['neuronpedia_description'][:50] + "..." if len(node['neuronpedia_description']) > 50 else node['neuronpedia_description']
-                interpretation = f" - {desc}"
-            
-            print(f"  {i+1}. Node {node['node_idx']}: {node_type} (Layer {layer}, Feature {feature_id}, Influence: {influence:.4f}){interpretation}")
-    
-    if results['pathway_analysis']['edge_types']:
-        print(f"\\nTop 3 critical pathway types:")
-        for i, (edge_type, count) in enumerate(list(results['pathway_analysis']['edge_types'].items())[:3]):
-            print(f"  {i+1}. {edge_type}: {count} connections")
-    
-    print("\\nThis analysis reveals the specific attribution graph components")
-    print("that the GNN model uses to detect prompt injection attacks.")
+    # Show final summary
+    interpreted_count = df['neuronpedia_description'].notna().sum()
+    print(f"\n✅ Analysis complete! Found interpretations for {interpreted_count} nodes.")
+    print("Check the log directory for detailed results and summary report.")
+
 
 if __name__ == "__main__":
     main()
