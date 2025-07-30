@@ -14,7 +14,7 @@
 
 module purge
 module load miniconda
-conda activate circuit
+conda activate ag
 
 # # Debug: Check what's actually installed in circuit environment
 # echo "=== ENVIRONMENT DEBUG ==="
