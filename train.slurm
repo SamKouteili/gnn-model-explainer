@@ -40,7 +40,8 @@ conda activate ag
 echo "=== STARTING TRAINING ==="
 # Run training with the local dataset - small model, reasonable resources
 python train_attribution_graphs.py \
-	--datadir /home/sk2959/palmer_scratch/data \
+	--data-dir /home/sk2959/scratch_pi_rp476/sk2959/ag_data \
+	--cache-dir /home/sk2959/scratch_pi_rp476/sk2959/
 	--max-files 900 \
 	--epochs 250 \
 	--gpu

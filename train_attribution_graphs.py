@@ -156,11 +156,10 @@ def main():
         description="Train GNN on attribution graphs")
 
     # Data arguments
-    parser.add_argument("--datadir", required=True,
+    parser.add_argument("--data-dir", required=True,
                         help="Directory containing benign/ and injected/ subdirs")
-    parser.add_argument(
-        "--cache-dir", help="Cache directory for processed graphs",
-        default="/home/sk2959/scratch_pi_rp476/sk2959/ag_data/gnn-graph-train-cache/")
+    parser.add_argument("--cache-dir",
+                        help="Cache directory for processed graphs")
     parser.add_argument("--max-files", type=int,
                         help="Maximum files per category (for testing)")
 
