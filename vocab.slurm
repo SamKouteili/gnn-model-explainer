@@ -4,11 +4,12 @@
 #SBATCH --error=logs/%x-%j_%A_%a.err
 #SBATCH --mail-type=ALL
 
-#SBATCH --job-name=training
-#SBATCH --time=24:00:00
-#SBATCH --mem=450G
+#SBATCH --job-name=vocab
+#SBATCH --time=12:00:00
+#SBATCH --mem=80G
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
+#SBATCH --constraint=a100|a5000|rtx5000|v100
 #SBATCH --cpus-per-gpu=2
 
 module purge
@@ -37,10 +38,6 @@ conda activate ag
 # export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 # export TOKENIZERS_PARALLELISM=false
 
-echo "=== STARTING TRAINING ==="
+echo "=== STARTING VOCAB ==="
 # Run training with the local dataset - small model, reasonable resources
-python train_attribution_graphs.py \
-	--datadir /home/sk2959/palmer_scratch/data \
-	--max-files 900 \
-	--epochs 250 \
-	--gpu
+python create_node_vocabulary.py /home/sk2959/scratch_pi_rp476/sk2959/ag_data ./node_vocab.pkl
