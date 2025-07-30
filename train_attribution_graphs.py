@@ -24,7 +24,7 @@ def train_attribution_graphs(args):
     # Load and split data
     print("Loading attribution graphs with semantic processing...")
     train_graphs, val_graphs, test_graphs = create_gnn_explainer_splits_semantic(
-        args.datadir,
+        args.data_dir,
         cache_dir=args.cache_dir,
         max_files=args.max_files,
         test_size=args.test_ratio,

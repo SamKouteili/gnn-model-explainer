@@ -6,7 +6,7 @@
 
 #SBATCH --job-name=training
 #SBATCH --time=24:00:00
-#SBATCH --mem=450G
+#SBATCH --mem=475G
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
 #SBATCH --cpus-per-gpu=2
