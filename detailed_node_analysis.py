@@ -10,6 +10,7 @@ retrieves interpretations from Neuronpedia.
 import json
 import numpy as np
 import pandas as pd
+import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from neuronpedia_integration import NeuronpediaClient
@@ -21,8 +22,8 @@ class DetailedNodeAnalyzer:
         self.data_dir = Path(data_dir)
         self.client = NeuronpediaClient()
         
-    def load_explainer_results(self) -> Tuple[np.ndarray, Dict]:
-        """Load masked adjacency matrix and node mappings from explainer output"""
+    def load_explainer_results(self) -> np.ndarray:
+        """Load masked adjacency matrix from explainer output"""
         print("=== Loading Explainer Results ===")
         
         # Load masked adjacency matrix
@@ -33,27 +34,9 @@ class DetailedNodeAnalyzer:
         adj_matrix = np.load(masked_files[0])
         print(f"Loaded adjacency matrix: {adj_matrix.shape}")
         
-        # Load node mappings from explainer output
-        results_json = self.log_dir / "detailed_node_analysis_results.json"
-        node_mapping = {}
-        
-        if results_json.exists():
-            with open(results_json, 'r') as f:
-                results = json.load(f)
-            
-            if 'top_nodes' in results:
-                for node_data in results['top_nodes']:
-                    node_idx = node_data.get('node_idx', 0)
-                    node_mapping[node_idx] = node_data
-                    
-            print(f"Loaded {len(node_mapping)} node mappings")
-        else:
-            raise FileNotFoundError(f"Explainer results not found at {results_json}")
-        
-        return adj_matrix, node_mapping
+        return adj_matrix
     
-    def calculate_node_importance(self, adj_matrix: np.ndarray, 
-                                node_mapping: Dict) -> pd.DataFrame:
+    def calculate_node_importance(self, adj_matrix: np.ndarray) -> pd.DataFrame:
         """Calculate importance metrics for each node"""
         print("=== Calculating Node Importance ===")
         
@@ -80,26 +63,6 @@ class DetailedNodeAnalyzer:
                 'out_connections': out_connections
             }
             
-            # Add explainer-derived information if available
-            if i in node_mapping:
-                mapped_data = node_mapping[i]
-                node_info.update({
-                    'layer': mapped_data.get('layer_feat'),
-                    'feature_id': mapped_data.get('processed_feature_id'),
-                    'node_type': mapped_data.get('node_type', 'unknown'),
-                    'activation': mapped_data.get('activation_feat'),
-                    'ctx_idx': mapped_data.get('ctx_idx_feat')
-                })
-            else:
-                # Set defaults for unmapped nodes
-                node_info.update({
-                    'layer': None,
-                    'feature_id': None,
-                    'node_type': 'unknown',
-                    'activation': None,
-                    'ctx_idx': None
-                })
-            
             node_data.append(node_info)
         
         df = pd.DataFrame(node_data)
@@ -108,17 +71,27 @@ class DetailedNodeAnalyzer:
         print(f"Calculated importance for {len(df)} nodes")
         return df
     
-    def load_source_graph_data(self, graph_path: str) -> Dict:
-        """Load node data from source attribution graph"""
-        graph_file = Path(graph_path)
+    def load_node_vocabulary(self, vocab_file: str) -> Tuple[Dict, Dict]:
+        """Load pre-created node vocabulary from pickle file"""
+        print("=== Loading Node Vocabulary ===")
         
-        if not graph_file.exists():
-            raise FileNotFoundError(f"Source graph not found: {graph_path}")
+        vocab_path = Path(vocab_file)
+        if not vocab_path.exists():
+            raise FileNotFoundError(f"Vocabulary file not found: {vocab_file}")
         
-        with open(graph_file, 'r') as f:
-            graph_data = json.load(f)
+        print(f"Loading vocabulary from: {vocab_file}")
+        with open(vocab_file, 'rb') as f:
+            vocab_data = pickle.load(f)
         
-        return graph_data
+        node_vocab = vocab_data['node_vocab']
+        node_index_map = vocab_data['node_index_map']
+        stats = vocab_data.get('stats', {})
+        
+        print(f"✅ Vocabulary loaded successfully!")
+        print(f"  Total nodes: {stats.get('total_nodes', len(node_index_map)):,}")
+        print(f"  Unique (layer, feature_id) combinations: {len(node_vocab):,}")
+        
+        return node_vocab, node_index_map
     
     def is_valid_for_neuronpedia(self, node: Dict) -> bool:
         """Check if a node is valid for Neuronpedia lookup"""
@@ -182,6 +155,36 @@ class DetailedNodeAnalyzer:
                 
         return None
     
+    def enrich_with_semantic_info(self, df: pd.DataFrame, node_vocab: Dict, 
+                                node_index_map: Dict) -> pd.DataFrame:
+        """Enrich nodes with semantic information from source graphs"""
+        print("=== Enriching Nodes with Semantic Information ===")
+        
+        # Add semantic information columns
+        df['layer'] = None
+        df['feature_id'] = None
+        df['node_type'] = None
+        df['activation'] = None
+        df['ctx_idx'] = None
+        df['source_file'] = None
+        
+        for idx, row in df.iterrows():
+            node_idx = row['node_idx']
+            
+            # Try direct index mapping first (most reliable)
+            if node_idx in node_index_map:
+                node_info = node_index_map[node_idx]
+                df.at[idx, 'layer'] = node_info['layer']
+                df.at[idx, 'feature_id'] = node_info['feature_id']
+                df.at[idx, 'node_type'] = node_info['node_type']
+                df.at[idx, 'activation'] = node_info['activation']
+                df.at[idx, 'ctx_idx'] = node_info['ctx_idx']
+                df.at[idx, 'source_file'] = node_info['source_file']
+        
+        enriched_count = df['layer'].notna().sum()
+        print(f"Successfully enriched {enriched_count}/{len(df)} nodes with semantic info")
+        return df
+    
     def enrich_with_neuronpedia(self, df: pd.DataFrame, 
                               max_nodes: int = 20) -> pd.DataFrame:
         """Enrich top nodes with Neuronpedia interpretations"""
@@ -198,6 +201,7 @@ class DetailedNodeAnalyzer:
         
         for idx, row in df.head(max_nodes).iterrows():
             if not self.is_valid_for_neuronpedia(row):
+                print(f"  Skipping node {row['node_idx']}: Invalid for Neuronpedia lookup")
                 continue
                 
             print(f"  Checking node {row['node_idx']}: Layer {row['layer']}, "
@@ -290,18 +294,24 @@ class DetailedNodeAnalyzer:
                 json.dump(interpreted_data, f, indent=2, default=str)
             print(f"Interpreted nodes saved to: {json_path}")
     
-    def run_analysis(self, max_nodes: int = 20) -> pd.DataFrame:
+    def run_analysis(self, vocab_file: str, max_nodes: int = 20) -> pd.DataFrame:
         """Run the complete analysis pipeline"""
         print("Starting GNN Explainer Node Analysis with Neuronpedia Integration")
         print("=" * 80)
         
         # Load explainer results
-        adj_matrix, node_mapping = self.load_explainer_results()
+        adj_matrix = self.load_explainer_results()
         
-        # Calculate node importance
-        df = self.calculate_node_importance(adj_matrix, node_mapping)
+        # Calculate node importance from adjacency matrix
+        df = self.calculate_node_importance(adj_matrix)
         
-        # Show top nodes before enrichment
+        # Load pre-created node vocabulary
+        node_vocab, node_index_map = self.load_node_vocabulary(vocab_file)
+        
+        # Enrich with semantic information
+        df = self.enrich_with_semantic_info(df, node_vocab, node_index_map)
+        
+        # Show top nodes before Neuronpedia enrichment
         print(f"\nTop 10 nodes by influence:")
         display_cols = ['node_idx', 'node_type', 'layer', 'feature_id', 
                        'total_influence', 'total_connections']
@@ -322,13 +332,35 @@ class DetailedNodeAnalyzer:
 
 
 def main():
-    analyzer = DetailedNodeAnalyzer()
-    df = analyzer.run_analysis(max_nodes=20)
+    import sys
     
-    # Show final summary
-    interpreted_count = df['neuronpedia_description'].notna().sum()
-    print(f"\n✅ Analysis complete! Found interpretations for {interpreted_count} nodes.")
-    print("Check the log directory for detailed results and summary report.")
+    # Parse command line arguments
+    if len(sys.argv) < 2:
+        print("Usage: python detailed_node_analysis.py <vocab_file> [max_nodes]")
+        print("Example: python detailed_node_analysis.py node_vocabulary.pkl 20")
+        print()
+        print("First create the vocabulary with:")
+        print("  python create_node_vocabulary.py /path/to/graphs node_vocabulary.pkl")
+        sys.exit(1)
+    
+    vocab_file = sys.argv[1]
+    max_nodes = int(sys.argv[2]) if len(sys.argv) > 2 else 20
+    
+    print(f"Using vocabulary file: {vocab_file}")
+    print(f"Analyzing top {max_nodes} nodes")
+    
+    try:
+        analyzer = DetailedNodeAnalyzer()
+        df = analyzer.run_analysis(vocab_file, max_nodes=max_nodes)
+        
+        # Show final summary
+        interpreted_count = df['neuronpedia_description'].notna().sum()
+        print(f"\n✅ Analysis complete! Found interpretations for {interpreted_count} nodes.")
+        print("Check the log directory for detailed results and summary report.")
+        
+    except Exception as e:
+        print(f"\n❌ Analysis failed: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":
