@@ -362,7 +362,7 @@ def create_gnn_explainer_splits_semantic(
 
     # Simple fixed split: 60% train, 20% val, 20% test
     train_graphs, temp_graphs, train_labels, temp_labels = train_test_split(
-        graphs, labels, test_size=0.4, random_state=random_state, stratify=labels
+        graphs, labels, test_size=(test_size+val_size), random_state=random_state, stratify=labels
     )
 
     # Split the remaining 40% into 20% val and 20% test
