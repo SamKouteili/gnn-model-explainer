@@ -38,92 +38,142 @@ class NeuronpediaClient:
         if self.api_key:
             self.session.headers.update({"Authorization": f"Bearer {self.api_key}"})
         
-        logging.basicConfig(level=logging.INFO)
+        logging.basicConfig(level=logging.WARNING)  # Reduce verbosity
         self.logger = logging.getLogger(__name__)
 
-    def get_gemmascope_layer_id(self, layer: int, transcoder_type: str = "res") -> str:
+    def get_gemmascope_layer_id(self, layer: int, sae_type: str = "res") -> str:
         """Convert layer number to GemmaScope layer identifier"""
-        return f"{layer}-gemmascope-{transcoder_type}-16k"
+        return f"{layer}-gemmascope-{sae_type}-16k"
     
-    def get_feature_interpretation(self, layer: int, feature_idx: int) -> Optional[FeatureInterpretation]:
+    def get_feature_interpretation(self, layer: int, feature_idx: int, sae_type: str = None) -> Optional[FeatureInterpretation]:
         """Get comprehensive feature interpretation from Neuronpedia"""
-        cache_key = f"{layer}_{feature_idx}"
+        cache_key = f"{layer}_{feature_idx}_{sae_type or 'auto'}"
         if cache_key in self.cache:
             return self.cache[cache_key]
         
-        layer_id = self.get_gemmascope_layer_id(layer)
-        url = f"{self.base_url}/feature/{self.model_id}/{layer_id}/{feature_idx}"
+        # Try different SAE types if not specified
+        sae_types_to_try = [sae_type] if sae_type else ["transcoder", "res", "att"]
         
-        try:
-            self.logger.info(f"Fetching interpretation for Layer {layer}, Feature {feature_idx}")
-            response = self.session.get(url, timeout=10)
+        for current_sae_type in sae_types_to_try:
+            layer_id = self.get_gemmascope_layer_id(layer, current_sae_type)
+            url = f"{self.base_url}/feature/{self.model_id}/{layer_id}/{feature_idx}"
             
-            if response.status_code == 200:
-                data = response.json()
-                interpretation = self._parse_feature_data(data, layer, feature_idx)
-                self.cache[cache_key] = interpretation
-                return interpretation
-            elif response.status_code == 404:
-                self.logger.warning(f"Feature not found: Layer {layer}, Feature {feature_idx}")
-                return None
-            else:
-                self.logger.error(f"API error {response.status_code}: {response.text}")
-                return None
+            try:
+                response = self.session.get(url, timeout=10)
                 
-        except requests.RequestException as e:
-            self.logger.error(f"Request failed for Layer {layer}, Feature {feature_idx}: {e}")
-            return None
-        except Exception as e:
-            self.logger.error(f"Unexpected error: {e}")
-            return None
+                if response.status_code == 200:
+                    data = response.json()
+                    if data is None:
+                        continue
+                    interpretation = self._parse_feature_data(data, layer, feature_idx)
+                    self.cache[cache_key] = interpretation
+                    return interpretation
+                elif response.status_code == 404:
+                    continue
+                else:
+                    continue
+                    
+            except (requests.RequestException, Exception):
+                continue
+        
+        return None
     
     def _parse_feature_data(self, data: Dict, layer: int, feature_idx: int) -> FeatureInterpretation:
         """Parse Neuronpedia API response into structured interpretation"""
         
-        # Extract basic information
-        description = data.get("description", "No description available")
-        explanation = data.get("explanation", {}).get("text", None)
-        auto_interp_score = data.get("explanation", {}).get("score", None)
+        # Extract basic information - handle both old and new API formats
+        description = "No description available"
+        explanation = None
+        auto_interp_score = None
         
-        # Extract logit information
+        # Extract description and explanation from explanations array
+        if isinstance(data.get("explanations"), list) and len(data["explanations"]) > 0:
+            first_explanation = data["explanations"][0]
+            if isinstance(first_explanation, dict):
+                description = first_explanation.get("description", "No description available")
+                explanation = first_explanation.get("description", None)
+                # Try to extract score from scores dict if available
+                scores = first_explanation.get("scores", {})
+                if isinstance(scores, dict):
+                    auto_interp_score = scores.get("score") or scores.get("auto_interp_score")
+                else:
+                    auto_interp_score = None
+        
+        # Fallback to other possible fields
+        if description == "No description available":
+            if "description" in data:
+                description = data["description"]
+            elif "label" in data:
+                description = data["label"]
+            elif "vectorLabel" in data and data["vectorLabel"]:
+                description = data["vectorLabel"]
+        
+        # Extract logit information - simplified for now since API format unclear
         top_logits = []
         bottom_logits = []
         
-        logits_data = data.get("logits", {})
-        if "top_logits" in logits_data:
-            for logit in logits_data["top_logits"][:10]:  # Top 10
-                top_logits.append({
-                    "token": logit.get("token", ""),
-                    "logit_diff": logit.get("logit_diff", 0.0),
-                    "rank": logit.get("rank", 0)
-                })
+        # Try to extract logit information if available, but don't fail if not found
+        try:
+            logits_data = data.get("logits", {})
+            if isinstance(logits_data, dict):
+                if "top_logits" in logits_data and isinstance(logits_data["top_logits"], list):
+                    for logit in logits_data["top_logits"][:10]:  # Top 10
+                        if isinstance(logit, dict):
+                            top_logits.append({
+                                "token": logit.get("token", ""),
+                                "logit_diff": logit.get("logit_diff", 0.0),
+                                "rank": logit.get("rank", 0)
+                            })
+                
+                if "bottom_logits" in logits_data and isinstance(logits_data["bottom_logits"], list):
+                    for logit in logits_data["bottom_logits"][:10]:  # Bottom 10
+                        if isinstance(logit, dict):
+                            bottom_logits.append({
+                                "token": logit.get("token", ""),
+                                "logit_diff": logit.get("logit_diff", 0.0),
+                                "rank": logit.get("rank", 0)
+                            })
+        except Exception:
+            pass
         
-        if "bottom_logits" in logits_data:
-            for logit in logits_data["bottom_logits"][:10]:  # Bottom 10
-                bottom_logits.append({
-                    "token": logit.get("token", ""),
-                    "logit_diff": logit.get("logit_diff", 0.0),
-                    "rank": logit.get("rank", 0)
-                })
-        
-        # Extract max activating examples
+        # Extract max activating examples - simplified for now
         max_examples = []
-        examples_data = data.get("activations", {}).get("examples", [])
-        for example in examples_data[:5]:  # Top 5 examples
-            max_examples.append({
-                "text": example.get("text", ""),
-                "activation": example.get("activation", 0.0),
-                "tokens": example.get("tokens", [])
-            })
+        try:
+            activations_data = data.get("activations", {})
+            if isinstance(activations_data, dict):
+                examples_data = activations_data.get("examples", [])
+                if isinstance(examples_data, list):
+                    for example in examples_data[:5]:  # Top 5 examples
+                        if isinstance(example, dict):
+                            max_examples.append({
+                                "text": example.get("text", ""),
+                                "activation": example.get("activation", 0.0),
+                                "tokens": example.get("tokens", [])
+                            })
+        except Exception:
+            pass
         
-        # Extract activation statistics
-        act_stats = data.get("activations", {}).get("stats", {})
+        # Extract activation statistics - simplified for now
         activation_stats = {
-            "mean": act_stats.get("mean", 0.0),
-            "std": act_stats.get("std", 0.0),
-            "max": act_stats.get("max", 0.0),
-            "frequency": act_stats.get("frequency", 0.0)
+            "mean": 0.0,
+            "std": 0.0,
+            "max": data.get("maxActApprox", 0.0),  # Use maxActApprox from API response
+            "frequency": 0.0
         }
+        
+        try:
+            activations_data = data.get("activations", {})
+            if isinstance(activations_data, dict):
+                act_stats = activations_data.get("stats", {})
+                if isinstance(act_stats, dict):
+                    activation_stats.update({
+                        "mean": act_stats.get("mean", 0.0),
+                        "std": act_stats.get("std", 0.0),
+                        "max": act_stats.get("max", activation_stats["max"]),
+                        "frequency": act_stats.get("frequency", 0.0)
+                    })
+        except Exception:
+            pass
         
         return FeatureInterpretation(
             feature_id=feature_idx,
