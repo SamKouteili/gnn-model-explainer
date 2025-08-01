@@ -36,20 +36,20 @@ def train_attribution_graphs(args):
     print("Preparing data loaders...")
 
     # Calculate actual max nodes from our graphs
-    # all_graphs = train_graphs + val_graphs + test_graphs
-    # actual_max_nodes = max([G.number_of_nodes() for G in all_graphs])
-    # print(f"Actual max nodes in dataset: {actual_max_nodes}")
+    all_graphs = train_graphs + val_graphs + test_graphs
+    actual_max_nodes = max([G.number_of_nodes() for G in all_graphs])
+    print(f"Actual max nodes in dataset: {actual_max_nodes}")
 
     # # Use the larger of args.max_nodes or actual_max_nodes
-    # max_num_nodes = max(args.max_nodes, actual_max_nodes)
-    # print(f"Using max_num_nodes: {max_num_nodes}")
+    max_num_nodes = max(args.max_nodes, actual_max_nodes)
+    print(f"Using max_num_nodes: {max_num_nodes}")
 
     train_dataset, val_dataset, test_dataset, _, input_dim, assign_input_dim = prepare_data(
         # All graphs for max_num_nodes calculation
         (train_graphs + val_graphs + test_graphs),
         args,
         test_graphs=test_graphs,
-        max_nodes=args.max_nodes
+        max_nodes=max_num_nodes
     )
 
     # Override the datasets to use our splits
