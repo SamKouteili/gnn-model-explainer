@@ -22,7 +22,7 @@ def train_attribution_graphs(args):
     """Train GNN on attribution graphs"""
 
     # Load and split data
-    print("Loading attribution graphs with semantic processing...")
+    print("Loading attribution graphs with transcoder filtering...")
     train_graphs, val_graphs, test_graphs = create_gnn_explainer_splits_semantic(
         args.data_dir,
         cache_dir=args.cache_dir,
@@ -44,40 +44,15 @@ def train_attribution_graphs(args):
     max_num_nodes = max(args.max_nodes, actual_max_nodes)
     print(f"Using max_num_nodes: {max_num_nodes}")
 
+    # Now that all nodes are homogeneous (transcoder only), try using prepare_data
+    print("Creating homogeneous datasets with prepare_data...")
     train_dataset, val_dataset, test_dataset, _, input_dim, assign_input_dim = prepare_data(
         # All graphs for max_num_nodes calculation
-        (train_graphs + val_graphs + test_graphs),
+        all_graphs,
         args,
         test_graphs=test_graphs,
         max_nodes=max_num_nodes
     )
-
-    # Override the datasets to use our splits
-    # from utils.graph_utils import GraphSampler
-
-    # train_dataset = torch.utils.data.DataLoader(
-    #     GraphSampler(train_graphs, normalize=False,
-    #                  max_num_nodes=args.max_nodes, features=args.feature_type),
-    #     batch_size=args.batch_size,
-    #     shuffle=True,
-    #     num_workers=args.num_workers,
-    # )
-
-    # val_dataset = torch.utils.data.DataLoader(
-    #     GraphSampler(val_graphs, normalize=False,
-    #                  max_num_nodes=args.max_nodes, features=args.feature_type),
-    #     batch_size=args.batch_size,
-    #     shuffle=False,
-    #     num_workers=args.num_workers,
-    # )
-
-    # test_dataset = torch.utils.data.DataLoader(
-    #     GraphSampler(test_graphs, normalize=False,
-    #                  max_num_nodes=args.max_nodes, features=args.feature_type),
-    #     batch_size=args.batch_size,
-    #     shuffle=False,
-    #     num_workers=args.num_workers,
-    # )
 
     print(f"Dataset info:")
     print(f"  Max nodes: {args.max_nodes}")

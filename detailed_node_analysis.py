@@ -94,10 +94,9 @@ class DetailedNodeAnalyzer:
         return node_vocab, node_index_map
     
     def is_valid_for_neuronpedia(self, node: Dict) -> bool:
-        """Check if a node is valid for Neuronpedia lookup"""
+        """Check if a transcoder node is valid for Neuronpedia lookup"""
         layer = node.get('layer')
         feature_id = node.get('feature_id')
-        node_type = node.get('node_type')
         
         # Must have valid layer and feature_id
         if layer is None or feature_id is None:
@@ -107,29 +106,18 @@ class DetailedNodeAnalyzer:
         if layer in [0, "0", "E"] or not str(layer).isdigit():
             return False
             
-        # Skip invalid node types
-        if node_type in ['mlp reconstruction error', 'embedding', 'unknown']:
-            return False
-            
         # Feature ID must be in valid range for 16k SAEs
         if feature_id <= 0 or feature_id > 16384:
             return False
             
         return True
     
-    def get_neuronpedia_interpretation(self, layer: int, feature_id: int, 
-                                     feature_type: str) -> Optional[Dict]:
-        """Get interpretation from Neuronpedia for a specific feature"""
+    def get_neuronpedia_interpretation(self, layer: int, feature_id: int) -> Optional[Dict]:
+        """Get interpretation from Neuronpedia for a transcoder feature"""
         
-        # Map feature type to SAE type
-        sae_type_mapping = {
-            'cross layer transcoder': 'transcoder',
-            'embedding': 'res',
-            'logit': 'res'
-        }
-        
-        primary_sae_type = sae_type_mapping.get(feature_type, 'transcoder')
-        sae_types_to_try = [primary_sae_type, 'res', 'att', 'transcoder']
+        # All nodes are cross-layer transcoder, so always use transcoder SAE type
+        # But also try other types as fallback
+        sae_types_to_try = ['transcoder', 'res', 'att']
         
         for sae_type in sae_types_to_try:
             try:
@@ -205,10 +193,10 @@ class DetailedNodeAnalyzer:
                 continue
                 
             print(f"  Checking node {row['node_idx']}: Layer {row['layer']}, "
-                  f"Feature {row['feature_id']}, Type {row['node_type']}")
+                  f"Feature {row['feature_id']} (transcoder)")
             
             interpretation = self.get_neuronpedia_interpretation(
-                int(row['layer']), row['feature_id'], row['node_type'])
+                int(row['layer']), row['feature_id'])
             
             if interpretation:
                 df.at[idx, 'neuronpedia_description'] = interpretation['description']
@@ -240,14 +228,10 @@ class DetailedNodeAnalyzer:
         report.append(f"Nodes with interpretations: {interpreted_nodes}")
         report.append("")
         
-        # Node type distribution
-        if 'node_type' in df.columns:
-            type_counts = df['node_type'].value_counts()
-            report.append("Node type distribution:")
-            for node_type, count in type_counts.items():
-                pct = (count / total_nodes) * 100
-                report.append(f"  {node_type}: {count} ({pct:.1f}%)")
-            report.append("")
+        # All nodes are transcoder type now
+        report.append("Node type distribution:")
+        report.append(f"  cross layer transcoder: {total_nodes} (100.0%)")
+        report.append("")
         
         # Top interpreted nodes
         interpreted_df = df[df['neuronpedia_description'].notna()]
@@ -262,7 +246,7 @@ class DetailedNodeAnalyzer:
                     
                 report.append(f"{i:2d}. Node {node['node_idx']} "
                             f"(Layer {node['layer']}, Feature {node['feature_id']})")
-                report.append(f"    Type: {node['node_type']}")
+                report.append(f"    Type: cross layer transcoder")
                 report.append(f"    Influence: {node['total_influence']:.4f}")
                 report.append(f"    Description: {desc}")
                 if node['neuronpedia_top_tokens']:
@@ -312,8 +296,8 @@ class DetailedNodeAnalyzer:
         df = self.enrich_with_semantic_info(df, node_vocab, node_index_map)
         
         # Show top nodes before Neuronpedia enrichment
-        print(f"\nTop 10 nodes by influence:")
-        display_cols = ['node_idx', 'node_type', 'layer', 'feature_id', 
+        print(f"\nTop 10 transcoder nodes by influence:")
+        display_cols = ['node_idx', 'layer', 'feature_id', 
                        'total_influence', 'total_connections']
         available_cols = [col for col in display_cols if col in df.columns]
         print(df[available_cols].head(10).to_string(index=False))

@@ -21,33 +21,22 @@ logger = logging.getLogger(__name__)
 
 
 class SemanticAttributionGraphConverter:
-    """Convert attribution graphs with proper semantic processing"""
+    """Convert attribution graphs with cross-layer transcoder filtering"""
 
     def __init__(self):
-        # Feature names (same as data_converter.py)
+        # Simplified feature names - only cross-layer transcoder nodes
         self.feature_names = [
-            'influence', 'activation', 'layer', 'ctx_idx', 'feature',
-            'is_cross_layer_transcoder', 'is_mlp_error', 'is_embedding', 'is_target_logit'
+            'influence', 'activation', 'layer', 'ctx_idx', 'feature_id'
         ]
         self.feature_dims = len(self.feature_names)
 
-    def _is_error_node(self, node: Dict) -> bool:
-        """Check if a node is an error node that should be pruned (same as data_converter.py)"""
-        node_id = node.get('node_id', '')
+    def _is_transcoder_node(self, node: Dict) -> bool:
+        """Check if a node is a cross-layer transcoder node"""
         feature_type = node.get('feature_type', '')
-
-        # Check for error node ID patterns
-        if node_id.startswith('E_'):
-            return True
-
-        # Check for error feature types
-        if feature_type in ['mlp reconstruction error', 'embedding']:
-            return True
-
-        return False
+        return feature_type == 'cross layer transcoder'
 
     def extract_node_features(self, node: Dict) -> List[float]:
-        """Extract numeric features from a node (same as data_converter.py)"""
+        """Extract numeric features from a cross-layer transcoder node"""
         features = []
 
         # Basic numeric features - handle None values
@@ -63,44 +52,12 @@ class SemanticAttributionGraphConverter:
         ctx_idx = node.get('ctx_idx', 0)
         features.append(float(ctx_idx if ctx_idx is not None else 0))
 
-        # Instead of raw feature (mixed semantics), use feature type indicators
+        # Feature ID - preserve original without normalization since all nodes are transcoder
         feature_val = node.get('feature', 0)
-        feature_type = node.get('feature_type', 'unknown')
-
-        # Separate the feature field by type to avoid mixed semantics
-        if feature_type == 'cross layer transcoder':
-            # Preserve original feature_id without clamping
-            if feature_val is not None:
-                normalized_val = float(feature_val) / 1000.0
-                features.append(normalized_val)
-            else:
-                features.append(0.0)
-        elif feature_type == 'embedding':
-            # Token position - preserve original values
-            if feature_val is not None:
-                val = float(feature_val)
-                features.append(val)
-            else:
-                features.append(0.0)
-        elif feature_type == 'logit':
-            # Preserve original feature_id without clamping
-            if feature_val is not None:
-                normalized_val = float(feature_val) / 10000.0
-                features.append(normalized_val)
-            else:
-                features.append(0.0)
+        if feature_val is not None:
+            features.append(float(feature_val))
         else:
-            # Error nodes or unknown - set to 0
             features.append(0.0)
-
-        # One-hot encoded feature types
-        feature_type = node.get('feature_type', 'unknown')
-        features.append(1.0 if feature_type ==
-                        'cross layer transcoder' else 0.0)
-        features.append(1.0 if feature_type ==
-                        'mlp reconstruction error' else 0.0)
-        features.append(1.0 if feature_type == 'embedding' else 0.0)
-        features.append(1.0 if node.get('is_target_logit', False) else 0.0)
 
         return features
 
@@ -127,30 +84,30 @@ class SemanticAttributionGraphConverter:
 
 def json_to_networkx_semantic(data: Dict[str, Any], label: int, converter: SemanticAttributionGraphConverter) -> nx.Graph:
     """
-    Convert JSON attribution graph data to NetworkX graph with proper semantic processing
+    Convert JSON attribution graph data to NetworkX graph with cross-layer transcoder filtering
     """
     G = nx.Graph()
 
     # Set graph-level label
     G.graph["label"] = label
 
-    # Process nodes with semantic filtering
+    # Process nodes with transcoder filtering
     nodes_data = data.get("nodes", [])
     valid_nodes = []
     node_id_to_index = {}
 
-    # Filter out error nodes (same as data_converter.py)
+    # Filter to keep only cross-layer transcoder nodes
     for node in nodes_data:
-        if 'node_id' not in node or converter._is_error_node(node):
+        if 'node_id' not in node or not converter._is_transcoder_node(node):
             continue
         valid_nodes.append(node)
 
-    # Extract features for valid nodes
+    # Extract features for transcoder nodes
     for i, node_data in enumerate(valid_nodes):
         node_id = node_data['node_id']
         node_id_to_index[node_id] = i
 
-        # Extract semantic features using the same method as data_converter.py
+        # Extract features from cross-layer transcoder nodes
         feat = np.array(converter.extract_node_features(node_data))
 
         # Check for NaN/Inf in node features
@@ -180,7 +137,7 @@ def json_to_networkx_semantic(data: Dict[str, Any], label: int, converter: Seman
         source_id = edge_data.get("source")
         target_id = edge_data.get("target")
 
-        # Skip edges that connect to error nodes (which we filtered out)
+        # Skip edges that connect to non-transcoder nodes (which we filtered out)
         # This is crucial for consistency between nodes and edges
         if source_id not in node_id_to_index or target_id not in node_id_to_index:
             skipped_edges += 1
@@ -238,18 +195,18 @@ def load_attribution_graphs_semantic(
     max_files: int = None
 ) -> Tuple[List[nx.Graph], List[int]]:
     """
-    Load attribution graphs with semantic processing from directory structure
+    Load attribution graphs with cross-layer transcoder filtering from directory structure
     """
     data_path = Path(data_dir)
 
     # Set up caching
     if cache_dir is None:
-        cache_dir = data_path.parent / "gnn_explainer_cache_semantic"
+        cache_dir = data_path.parent / "gnn_explainer_cache_transcoder"
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
     # Create cache filename
-    cache_filename = f"semantic_networkx_graphs_{data_path.name}"
+    cache_filename = f"transcoder_networkx_graphs_{data_path.name}"
     if max_files:
         cache_filename += f"_max{max_files}"
     cache_filename += ".pkl"
@@ -257,7 +214,7 @@ def load_attribution_graphs_semantic(
 
     # Try to load from cache
     if cache_file.exists():
-        logger.info(f"Loading cached semantic graphs from {cache_file}")
+        logger.info(f"Loading cached transcoder graphs from {cache_file}")
         try:
             with open(cache_file, 'rb') as f:
                 cached_data = pickle.load(f)
@@ -273,7 +230,7 @@ def load_attribution_graphs_semantic(
             # Remove problematic cache file
             cache_file.unlink()
 
-    logger.info(f"Loading semantic graphs from {data_dir}")
+    logger.info(f"Loading transcoder-only graphs from {data_dir}")
 
     # Initialize converter
     converter = SemanticAttributionGraphConverter()
@@ -289,7 +246,7 @@ def load_attribution_graphs_semantic(
             benign_files = random.sample(benign_files, max_files)
 
         logger.info(
-            f"Loading {len(benign_files)} benign graphs with semantic processing")
+            f"Loading {len(benign_files)} benign graphs with transcoder filtering")
         for file_path in tqdm.tqdm(benign_files, desc="Loading benign graphs"):
             try:
                 with open(file_path, 'r') as f:
@@ -311,7 +268,7 @@ def load_attribution_graphs_semantic(
             injected_files = random.sample(injected_files, max_files)
 
         logger.info(
-            f"Loading {len(injected_files)} injected graphs with semantic processing")
+            f"Loading {len(injected_files)} injected graphs with transcoder filtering")
         for file_path in tqdm.tqdm(injected_files, desc="Loading injected graphs"):
             try:
                 with open(file_path, 'r') as f:
@@ -334,11 +291,11 @@ def load_attribution_graphs_semantic(
         "num_injected": sum(1 for l in labels if l == 1)
     }
 
-    logger.info(f"Caching {len(graphs)} semantic graphs to {cache_file}")
+    logger.info(f"Caching {len(graphs)} transcoder graphs to {cache_file}")
     with open(cache_file, 'wb') as f:
         pickle.dump(cache_data, f)
 
-    logger.info(f"Loaded {len(graphs)} semantic graphs total:")
+    logger.info(f"Loaded {len(graphs)} transcoder graphs total:")
     logger.info(f"  Benign: {sum(1 for l in labels if l == 0)}")
     logger.info(f"  Injected: {sum(1 for l in labels if l == 1)}")
 
@@ -354,7 +311,7 @@ def create_gnn_explainer_splits_semantic(
     random_state: int = 42
 ) -> Tuple[List[nx.Graph], List[nx.Graph], List[nx.Graph]]:
     """
-    Create train/val/test splits for gnn-model-explainer with semantic processing
+    Create train/val/test splits for gnn-model-explainer with transcoder filtering
     """
     graphs, labels = load_attribution_graphs_semantic(
         data_dir, cache_dir, max_files
