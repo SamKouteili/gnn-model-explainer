@@ -9,7 +9,6 @@
 #SBATCH --mem=80G
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
-#SBATCH --constraint=a100|a5000|rtx5000|v100
 #SBATCH --cpus-per-gpu=2
 
 module purge
@@ -44,3 +43,4 @@ python explain_attribution_graphs.py \
       --multigraph-class 1 \
       --explainer-suffix "injected_patterns" \
       --gpu
+
