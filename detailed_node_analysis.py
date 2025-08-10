@@ -13,7 +13,7 @@ import pandas as pd
 import pickle
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from neuronpedia_integration import NeuronpediaClient
+from neuronpedia_integration import NeuronpediaClient, reverse_feature_normalization
 
 
 class DetailedNodeAnalyzer:
@@ -21,18 +21,41 @@ class DetailedNodeAnalyzer:
         self.log_dir = Path(log_dir)
         self.data_dir = Path(data_dir)
         self.client = NeuronpediaClient()
+        # Holds optional sidecar metadata from explainer
+        self.current_neighbors: Optional[List[int]] = None
+        self.current_sub_feat: Optional[np.ndarray] = None
         
     def load_explainer_results(self) -> np.ndarray:
-        """Load masked adjacency matrix from explainer output"""
+        """Load masked adjacency matrix from explainer output and any sidecar metadata"""
         print("=== Loading Explainer Results ===")
         
         # Load masked adjacency matrix
-        masked_files = list(self.log_dir.glob("masked_adj_*.npy"))
+        masked_files = [p for p in self.log_dir.glob("masked_adj_*.npy") if not str(p).endswith(".sub_feat.npy")]
         if not masked_files:
             raise FileNotFoundError(f"No masked adjacency files found in {self.log_dir}")
         
-        adj_matrix = np.load(masked_files[0])
+        target_file = masked_files[0]
+        adj_matrix = np.load(target_file)
         print(f"Loaded adjacency matrix: {adj_matrix.shape}")
+        
+        # Try to load sidecar metadata written by the explainer (if present)
+        meta_path = Path(str(target_file).replace('.npy', '.meta.json'))
+        sub_feat_path = Path(str(target_file).replace('.npy', '.sub_feat.npy'))
+        self.current_neighbors = None
+        self.current_sub_feat = None
+        if meta_path.exists():
+            try:
+                meta = json.loads(meta_path.read_text())
+                self.current_neighbors = meta.get('neighbors_global_indices')
+                print(f"Loaded neighborhood metadata with {len(self.current_neighbors)} nodes")
+            except Exception as e:
+                print(f"Warning: failed to load metadata {meta_path}: {e}")
+        if sub_feat_path.exists():
+            try:
+                self.current_sub_feat = np.load(sub_feat_path)
+                print(f"Loaded subgraph features: {self.current_sub_feat.shape}")
+            except Exception as e:
+                print(f"Warning: failed to load subgraph features {sub_feat_path}: {e}")
         
         return adj_matrix
     
@@ -157,29 +180,68 @@ class DetailedNodeAnalyzer:
     
     def enrich_with_semantic_info(self, df: pd.DataFrame, node_vocab: Dict, 
                                 node_index_map: Dict) -> pd.DataFrame:
-        """Enrich nodes with semantic information from source graphs"""
+        """Enrich nodes with semantic information.
+        Prefers explainer sidecar features (exact alignment) when available; otherwise falls back to vocabulary mapping.
+        """
         print("=== Enriching Nodes with Semantic Information ===")
         
         # Add semantic information columns
         df['layer'] = None
         df['feature_id'] = None
+        df['processed_feature_id'] = None
         df['node_type'] = None
         df['activation'] = None
         df['ctx_idx'] = None
+        df['global_node_idx'] = None
         df['source_file'] = None
         
-        for idx, row in df.iterrows():
-            node_idx = row['node_idx']
-            
-            # Try direct index mapping first (most reliable)
-            if node_idx in node_index_map:
-                node_info = node_index_map[node_idx]
-                df.at[idx, 'layer'] = node_info['layer']
-                df.at[idx, 'feature_id'] = node_info['feature_id']
-                df.at[idx, 'node_type'] = node_info['node_type']
-                df.at[idx, 'activation'] = node_info['activation']
-                df.at[idx, 'ctx_idx'] = node_info['ctx_idx']
-                df.at[idx, 'source_file'] = node_info['source_file']
+        # Prefer direct extraction from explainer sidecar features if present
+        if self.current_sub_feat is not None:
+            # Feature layout from SemanticAttributionGraphConverter:
+            # [0] influence, [1] activation, [2] layer, [3] ctx_idx, [4] processed_feature,
+            # [5] is_cross_layer_transcoder, [6] is_mlp_error, [7] is_embedding, [8] is_target_logit
+            for idx, row in df.iterrows():
+                local_idx = int(row['node_idx'])
+                if local_idx < 0 or local_idx >= self.current_sub_feat.shape[0]:
+                    continue
+                feat_vec = self.current_sub_feat[local_idx]
+                layer_val = int(feat_vec[2])
+                processed_feature_val = float(feat_vec[4])
+                activation_val = float(feat_vec[1])
+                ctx_idx_val = int(feat_vec[3])
+                node_type_val = 'unknown'
+                if feat_vec[5] == 1.0:
+                    node_type_val = 'cross layer transcoder'
+                elif feat_vec[6] == 1.0:
+                    node_type_val = 'mlp reconstruction error'
+                elif feat_vec[7] == 1.0:
+                    node_type_val = 'embedding'
+                elif feat_vec[8] == 1.0:
+                    node_type_val = 'logit'
+
+                # Reverse normalization to recover original feature id when applicable
+                original_feature_id = reverse_feature_normalization(processed_feature_val, node_type_val)
+
+                df.at[idx, 'layer'] = layer_val
+                df.at[idx, 'processed_feature_id'] = processed_feature_val
+                df.at[idx, 'feature_id'] = original_feature_id
+                df.at[idx, 'node_type'] = node_type_val
+                df.at[idx, 'activation'] = activation_val
+                df.at[idx, 'ctx_idx'] = ctx_idx_val
+                if self.current_neighbors and local_idx < len(self.current_neighbors):
+                    df.at[idx, 'global_node_idx'] = self.current_neighbors[local_idx]
+        else:
+            # Fallback to vocabulary-based enrichment (may be approximate)
+            for idx, row in df.iterrows():
+                node_idx = row['node_idx']
+                if node_idx in node_index_map:
+                    node_info = node_index_map[node_idx]
+                    df.at[idx, 'layer'] = node_info['layer']
+                    df.at[idx, 'feature_id'] = node_info['feature_id']
+                    df.at[idx, 'node_type'] = node_info['node_type']
+                    df.at[idx, 'activation'] = node_info['activation']
+                    df.at[idx, 'ctx_idx'] = node_info['ctx_idx']
+                    df.at[idx, 'source_file'] = node_info['source_file']
         
         enriched_count = df['layer'].notna().sum()
         print(f"Successfully enriched {enriched_count}/{len(df)} nodes with semantic info")

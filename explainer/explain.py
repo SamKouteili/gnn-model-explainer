@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import tensorboardX.utils
+import json
 
 import torch
 import torch.nn as nn
@@ -223,6 +224,92 @@ class Explainer:
         with open(os.path.join(self.args.logdir, fname), 'wb') as outfile:
             np.save(outfile, np.asarray(masked_adj.copy()))
             print("Saved adjacency matrix to ", fname)
+
+        # Save neighborhood mapping and subgraph features for downstream semantic analysis
+        try:
+            if self.graph_mode:
+                local_neighbors = list(range(int(np.asarray(masked_adj).shape[0])))
+                global_center_idx = 0
+            else:
+                local_neighbors = [int(i) for i in neighbors.tolist()]
+                global_center_idx = int(neighbors[node_idx_new]) if len(neighbors) > int(node_idx_new) else None
+
+            meta = {
+                "neighbors_global_indices": local_neighbors,
+                "local_center_idx": int(node_idx_new),
+                "global_center_idx": global_center_idx,
+                "graph_mode": bool(self.graph_mode),
+                "graph_idx": int(self.graph_idx) if self.graph_idx is not None else None,
+                "original_node_idx_arg": int(node_idx),
+                "masked_adj_shape": list(np.asarray(masked_adj).shape),
+            }
+            meta_fname = fname.replace('.npy', '.meta.json')
+            with open(os.path.join(self.args.logdir, meta_fname), 'w') as mfile:
+                json.dump(meta, mfile)
+
+            # Save subgraph features aligned with neighbors
+            sub_feat_array = np.asarray(sub_feat).squeeze(0)
+            feat_fname = fname.replace('.npy', '.sub_feat.npy')
+            with open(os.path.join(self.args.logdir, feat_fname), 'wb') as ffile:
+                np.save(ffile, sub_feat_array)
+
+            # Also save a compact semantic summary for convenience
+            adj_np = np.asarray(masked_adj)
+            n_nodes = adj_np.shape[0]
+            total_influence = np.sum(np.abs(adj_np), axis=0) + np.sum(np.abs(adj_np), axis=1)
+            in_connections = np.count_nonzero(adj_np, axis=0)
+            out_connections = np.count_nonzero(adj_np, axis=1)
+
+            def node_type_from_feat(vec):
+                if len(vec) >= 9:
+                    if vec[5] == 1.0:
+                        return 'cross layer transcoder'
+                    if vec[6] == 1.0:
+                        return 'mlp reconstruction error'
+                    if vec[7] == 1.0:
+                        return 'embedding'
+                    if vec[8] == 1.0:
+                        return 'logit'
+                return 'unknown'
+
+            semantic_rows = []
+            for i in range(n_nodes):
+                feat_vec = sub_feat_array[i] if i < sub_feat_array.shape[0] else None
+                layer_val = int(feat_vec[2]) if feat_vec is not None and len(feat_vec) > 2 else None
+                processed_feature_val = float(feat_vec[4]) if feat_vec is not None and len(feat_vec) > 4 else None
+                activation_val = float(feat_vec[1]) if feat_vec is not None and len(feat_vec) > 1 else None
+                ctx_idx_val = int(feat_vec[3]) if feat_vec is not None and len(feat_vec) > 3 else None
+                node_type_val = node_type_from_feat(feat_vec) if feat_vec is not None else 'unknown'
+
+                semantic_rows.append({
+                    "node_idx": i,
+                    "layer": layer_val,
+                    "processed_feature_id": processed_feature_val,
+                    "node_type": node_type_val,
+                    "activation": activation_val,
+                    "ctx_idx": ctx_idx_val,
+                    "total_influence": float(total_influence[i]),
+                    "in_connections": int(in_connections[i]),
+                    "out_connections": int(out_connections[i])
+                })
+
+            semantic_rows.sort(key=lambda r: r["total_influence"], reverse=True)
+            summary = {
+                "masked_adj_file": fname,
+                "meta_file": meta_fname,
+                "sub_feat_file": feat_fname,
+                "semantic_nodes": semantic_rows,
+            }
+            summary_fname = fname.replace('.npy', '.semantic.json')
+            with open(os.path.join(self.args.logdir, summary_fname), 'w') as sfile:
+                json.dump(summary, sfile)
+
+            print("Saved neighborhood metadata to ", meta_fname)
+            print("Saved subgraph features to ", feat_fname)
+            print("Saved semantic summary to ", summary_fname)
+        except Exception as e:
+            print("Warning: failed to save explainer metadata:", e)
+
         return masked_adj
 
     # NODE EXPLAINER
