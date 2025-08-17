@@ -1029,24 +1029,48 @@ class ExplainModule(nn.Module):
         adj_grad = adj_grad.detach().numpy()
         if self.graph_mode:
             print("GRAPH model")
+            # Try fixed threshold first
             G = io_utils.denoise_graph(
                 adj_grad,
                 node_idx,
                 feat=self.x[0],
-                threshold=0.0003,  # threshold_num=20,
+                threshold=0.0003,  # original fixed threshold
                 max_component=True,
             )
-            io_utils.log_graph(
-                self.writer,
-                G,
-                name="grad/graph",
-                epoch=epoch,
-                identify_self=False,
-                label_node_feat=True,
-                nodecolor="feat",
-                edge_vmax=None,
-                args=self.args,
-            )
+            # If empty, try a top-K strategy; if still empty, include any >1e-6
+            if G.number_of_edges() == 0:
+                G = io_utils.denoise_graph(
+                    adj_grad,
+                    node_idx,
+                    feat=self.x[0],
+                    threshold=None,
+                    threshold_num=20,  # keep top edges by weight
+                    max_component=True,
+                )
+            if G.number_of_edges() == 0:
+                G = io_utils.denoise_graph(
+                    adj_grad,
+                    node_idx,
+                    feat=self.x[0],
+                    threshold=None,  # falls back to >1e-6 inside denoise_graph
+                    max_component=False,
+                )
+            # Skip logging if graph still has no edges to avoid errors
+            try:
+                if G.number_of_edges() > 0:
+                    io_utils.log_graph(
+                        self.writer,
+                        G,
+                        name="grad/graph",
+                        epoch=epoch,
+                        identify_self=False,
+                        label_node_feat=True,
+                        nodecolor="feat",
+                        edge_vmax=None,
+                        args=self.args,
+                    )
+            except Exception:
+                pass
         else:
             # G = io_utils.denoise_graph(adj_grad, node_idx, label=label, threshold=0.5)
             G = io_utils.denoise_graph(adj_grad, node_idx, threshold_num=12)
