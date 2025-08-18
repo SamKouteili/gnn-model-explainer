@@ -67,31 +67,37 @@ class SemanticAttributionGraphConverter:
         feature_val = node.get('feature', 0)
         feature_type = node.get('feature_type', 'unknown')
 
-        # Separate the feature field by type to avoid mixed semantics
-        if feature_type == 'cross layer transcoder':
-            # Preserve original feature_id without clamping
-            if feature_val is not None:
-                normalized_val = float(feature_val) / 1000.0
-                features.append(normalized_val)
-            else:
-                features.append(0.0)
-        elif feature_type == 'embedding':
-            # Token position - preserve original values
-            if feature_val is not None:
-                val = float(feature_val)
-                features.append(val)
-            else:
-                features.append(0.0)
-        elif feature_type == 'logit':
-            # Preserve original feature_id without clamping
-            if feature_val is not None:
-                normalized_val = float(feature_val) / 10000.0
-                features.append(normalized_val)
-            else:
-                features.append(0.0)
+        # TODO: remove this
+        if feature_type != 'unknown':
+            features.append(feature_val)
         else:
-            # Error nodes or unknown - set to 0
-            features.append(0.0)
+            features.append(0)
+
+        # Separate the feature field by type to avoid mixed semantics
+        # if feature_type == 'cross layer transcoder':
+        #     # Preserve original feature_id without clamping
+        #     if feature_val is not None:
+        #         # normalized_val = float(feature_val) / 1000.0
+        #         features.append(feature_val)
+        #     else:
+        #         features.append(0.0)
+        # elif feature_type == 'embedding':
+        #     # Token position - preserve original values
+        #     if feature_val is not None:
+        #         val = float(feature_val)
+        #         features.append(val)
+        #     else:
+        #         features.append(0.0)
+        # elif feature_type == 'logit':
+        #     # Preserve original feature_id without clamping
+        #     if feature_val is not None:
+        #         normalized_val = float(feature_val) / 10000.0
+        #         features.append(normalized_val)
+        #     else:
+        #         features.append(0.0)
+        # else:
+        #     # Error nodes or unknown - set to 0
+        #     features.append(0.0)
 
         # One-hot encoded feature types
         feature_type = node.get('feature_type', 'unknown')
