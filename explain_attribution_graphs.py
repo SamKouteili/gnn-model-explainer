@@ -28,7 +28,8 @@ def main():
                         default=64, help="Output dimension")
     parser.add_argument("--num-gc-layers", type=int,
                         default=3, help="Number of GC layers")
-
+    parser.add_argument("--epochs", type=int,
+                        default=100, help="Epocs to explain")
     # System arguments
     parser.add_argument("--gpu", action="store_true", help="Use GPU")
     parser.add_argument("--cuda", default="0", help="CUDA device")
@@ -59,6 +60,7 @@ def main():
         "--hidden-dim", str(args.hidden_dim),
         "--output-dim", str(args.output_dim),
         "--num-gc-layers", str(args.num_gc_layers),
+        "--epochs", args.epochs
         "--graph-mode",  # We're doing graph classification
         "--cuda", args.cuda,
     ]

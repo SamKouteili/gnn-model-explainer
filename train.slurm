@@ -6,7 +6,7 @@
 
 #SBATCH --job-name=training
 #SBATCH --time=24:00:00
-#SBATCH --mem=475G
+#SBATCH --mem=479G
 #SBATCH --partition=gpu
 #SBATCH --gpus=1
 #SBATCH --cpus-per-gpu=2
@@ -42,6 +42,6 @@ echo "=== STARTING TRAINING ==="
 python train_attribution_graphs.py \
 	--data-dir /home/sk2959/scratch_pi_rp476/sk2959/ag_data \
 	--cache-dir /home/sk2959/scratch_pi_rp476/sk2959/ \
-	--max-files 900 \
-	--epochs 250 \
+	--max-files 1000 \
+	--epochs 300 \
 	--gpu
