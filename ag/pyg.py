@@ -110,7 +110,9 @@ def main():
     args = ap.parse_args()
 
     master_path = args.master or os.path.join(args.data_dir, "vocabulary.json")
-    out_path = args.out or [os.path.join(args.data_dir, f"data{i}.pt") for i in range(0,28)]
+    out_path = args.out or [os.path.join(args.data_dir, f"data{i}.pt") for i in range(0,42)]
+    out_path = os.path.join(args.data_dir, "pyg")
+    os.mkdir(os.path.join(out_path, exists_ok=True)
 
     id2idx, idx2id = load_master_topology(master_path)
     print(f"[+] Master: {len(idx2id)} nodes")
@@ -122,8 +124,10 @@ def main():
     graphs_plain: List[dict] = []
     for i, (p, lbl) in enumerate(files, 1):
         b = i//BUNDLE_SIZE
-        path = out_path[b]
-        if (os.path.exists(out_path[b]):
+        path = out_path[b+1]
+        print(path, os.path.exists(path))
+        if (os.path.exists(path)):
+            print(f"exists: {path}")
             continue
         sample = build_plain_sample(
             p, id2idx, lbl,
