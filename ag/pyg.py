@@ -110,7 +110,7 @@ def main():
     args = ap.parse_args()
 
     master_path = args.master or os.path.join(args.data_dir, "vocabulary.json")
-    out_path = args.out or [os.path.join(args.data_dir, f"data{i}.pt") for i in range(0,6)]
+    out_path = args.out or [os.path.join(args.data_dir, f"data{i}.pt") for i in range(0,28)]
 
     id2idx, idx2id = load_master_topology(master_path)
     print(f"[+] Master: {len(idx2id)} nodes")
@@ -118,10 +118,13 @@ def main():
     files = discover_files(args.data_dir)
     print(f"[+] Found {len(files)} JSON samples")
 
-    k = 0
     BUNDLE_SIZE = 500
     graphs_plain: List[dict] = []
     for i, (p, lbl) in enumerate(files, 1):
+        b = i//BUNDLE_SIZE
+        path = out_path[b]
+        if (os.path.exists(out_path[b]):
+            continue
         sample = build_plain_sample(
             p, id2idx, lbl,
             node_feature_keys=NODE_FEATURE_KEYS,
@@ -140,7 +143,6 @@ def main():
                 "add_is_active_flag": ADD_IS_ACTIVE_FLAG,
               "dtype": "float16" if args.float16 else "float32",
             }
-            b = i//BUNDLE_SIZE
             torch.save(bundle, out_path[b])
             graphs_plain.clear()
             
