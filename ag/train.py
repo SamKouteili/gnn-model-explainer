@@ -54,7 +54,7 @@ def split_ids(file_ids, train_ratio=0.8, val_ratio=0.1, seed=42):
 
     return train_ids, val_ids, test_ids
 
-def load_graph_pair(data_dir, file_id, id2idx):
+def load_graph_pair(data_dir, file_id, id2idx, use_float16=True):
     """Load one benign and one random injected variant for a given file ID."""
     benign_path = os.path.join(data_dir, "benign", f"{file_id}.json")
 
@@ -77,32 +77,32 @@ def load_graph_pair(data_dir, file_id, id2idx):
         variant = random.choice(INJECTED_VARIANTS)
         injected_path = os.path.join(data_dir, "injected", f"{file_id}{variant}")
 
-    # Convert both to PyG Data objects
+    # Convert both to PyG Data objects with float16 for memory savings
     benign_data = build_plain_sample(benign_path, id2idx, label=0,
                                      node_feature_keys=NODE_FEATURE_KEYS,
                                      add_is_active_flag=ADD_IS_ACTIVE_FLAG,
-                                     use_float16=False)
+                                     use_float16=use_float16)
 
     injected_data = build_plain_sample(injected_path, id2idx, label=1,
                                        node_feature_keys=NODE_FEATURE_KEYS,
                                        add_is_active_flag=ADD_IS_ACTIVE_FLAG,
-                                       use_float16=False)
+                                       use_float16=use_float16)
 
     return Data(**benign_data), Data(**injected_data)
 
-def sample_batch(data_dir, file_ids, batch_size, id2idx, device):
+def sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=True):
     """Sample a balanced batch: batch_size benign + batch_size injected."""
     sampled_ids = random.sample(file_ids, min(batch_size, len(file_ids)))
 
     data_list = []
     for file_id in sampled_ids:
-        benign, injected = load_graph_pair(data_dir, file_id, id2idx)
+        benign, injected = load_graph_pair(data_dir, file_id, id2idx, use_float16=use_float16)
         data_list.append(benign)
         data_list.append(injected)
 
     return Batch.from_data_list(data_list).to(device)
 
-def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None):
+def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None, use_float16=True):
     """Run one epoch by sampling batches on-the-fly."""
     model.train(optimizer is not None)
 
@@ -114,7 +114,7 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
     loss_sum = 0.0
 
     for _ in range(num_batches):
-        batch = sample_batch(data_dir, file_ids, batch_size, id2idx, device)
+        batch = sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=use_float16)
 
         if optimizer:
             optimizer.zero_grad()
@@ -138,7 +138,7 @@ def main():
     ap.add_argument("data_dir", type=str, help="Directory containing benign/ and injected/ folders")
     ap.add_argument("--vocabulary", type=str, default=None, help="Path to vocabulary.json (default: <data_dir>/vocabulary.json)")
     ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--batch-size", type=int, default=8, help="Number of IDs to sample per batch (actual batch will be 2x this)")
+    ap.add_argument("--batch-size", type=int, default=4, help="Number of IDs to sample per batch (actual batch will be 2x this)")
     ap.add_argument("--hidden", type=int, default=128)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
@@ -147,10 +147,13 @@ def main():
     ap.add_argument("--train-ratio", type=float, default=0.8)
     ap.add_argument("--val-ratio", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--float16", action="store_true", help="Use float16 for node/edge features to save memory")
     args = ap.parse_args()
 
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
     print(f"[+] Using device: {device}")
+    print(f"[+] Using float16: {args.float16}")
+    print(f"[+] Batch size: {args.batch_size} IDs ({args.batch_size * 2} graphs per batch)")
 
     # Load vocabulary
     vocab_path = args.vocabulary or os.path.join(args.data_dir, "vocabulary.json")
@@ -170,10 +173,11 @@ def main():
     print(f"[+] Split: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)}")
 
     # Determine feature dimensionality from first sample
-    benign, injected = load_graph_pair(args.data_dir, train_ids[0], id2idx)
+    benign, injected = load_graph_pair(args.data_dir, train_ids[0], id2idx, use_float16=args.float16)
     in_dim = benign.x.size(1)
     num_classes = 2
     print(f"[+] Feature dim: {in_dim}, Num classes: {num_classes}")
+    print(f"[+] Nodes per graph: {benign.x.size(0)}, Edges: {benign.edge_index.size(1)}")
 
     # Initialize model
     model = GCNGraphClassifier(in_dim=in_dim, hidden=args.hidden, num_classes=num_classes).to(device)
@@ -182,14 +186,14 @@ def main():
     # Training loop
     for epoch in range(1, args.epochs + 1):
         tr_loss, tr_acc = run_epoch(model, args.data_dir, train_ids, args.batch_size, id2idx,
-                                     optimizer=opt, device=device)
+                                     optimizer=opt, device=device, use_float16=args.float16)
         va_loss, va_acc = run_epoch(model, args.data_dir, val_ids, args.batch_size, id2idx,
-                                     optimizer=None, device=device)
+                                     optimizer=None, device=device, use_float16=args.float16)
         print(f"epoch {epoch:03d} | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
 
     # Test evaluation
     te_loss, te_acc = run_epoch(model, args.data_dir, test_ids, args.batch_size, id2idx,
-                                 optimizer=None, device=device)
+                                 optimizer=None, device=device, use_float16=args.float16)
     print(f"[test] acc {te_acc:.3f} loss {te_loss:.4f}")
 
     # Save model
