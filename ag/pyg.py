@@ -71,8 +71,9 @@ def build_plain_sample(
         if s_id in not_clt_nodes or t_id in not_clt_nodes:
             continue
         if s_id in id2idx and t_id in id2idx:
-            src.append(id2idx[s_id]); dst.append(id2idx[t_id])
-            w.append(float(e.get("weight", 1.0)))
+            if abs(e["weight"]) > 1: 
+                src.append(id2idx[s_id]); dst.append(id2idx[t_id])
+                w.append(float(e.get("weight", 1.0)))
 
     if len(src) == 0:
         edge_index = torch.empty((2, 0), dtype=torch.long)
@@ -112,7 +113,7 @@ def main():
     master_path = args.master or os.path.join(args.data_dir, "vocabulary.json")
     out_path = args.out or [os.path.join(args.data_dir, f"data{i}.pt") for i in range(0,42)]
     out_path = os.path.join(args.data_dir, "pyg")
-    os.mkdir(os.path.join(out_path, exists_ok=True)
+    os.makedirs(out_path, exist_ok=True)
 
     id2idx, idx2id = load_master_topology(master_path)
     print(f"[+] Master: {len(idx2id)} nodes")
