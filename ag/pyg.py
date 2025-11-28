@@ -38,9 +38,13 @@ def build_plain_sample(
 
     # Fill present nodes
     present = set()
-    for n in g.get("nodes", []):
+    not_clt_nodes = set()
+    for n in g.get("nodes", []): 
         nid = n["node_id"]
         if nid not in id2idx:
+            continue
+        if n["feature_type"] != "cross layer transcoder":
+            not_clt_nodes.add(nid)
             continue
         i = id2idx[nid]
         present.add(i)
@@ -53,6 +57,7 @@ def build_plain_sample(
             try:
                 v = float(v)
             except Exception:
+                print(f"float({v}) raised exception; node:{n}")
                 v = 0.0
             vals.append(v)
         if add_is_active_flag:
@@ -63,6 +68,8 @@ def build_plain_sample(
     src, dst, w = [], [], []
     for e in g.get("links", []):
         s_id, t_id = e["source"], e["target"]
+        if s_id in not_clt_nodes or t_id in not_clt_nodes:
+            continue
         if s_id in id2idx and t_id in id2idx:
             src.append(id2idx[s_id]); dst.append(id2idx[t_id])
             w.append(float(e.get("weight", 1.0)))
