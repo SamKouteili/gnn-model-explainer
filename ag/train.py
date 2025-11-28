@@ -181,6 +181,12 @@ def main():
 
     # Initialize model
     model = GCNGraphClassifier(in_dim=in_dim, hidden=args.hidden, num_classes=num_classes).to(device)
+
+    # Convert model to float16 if requested
+    if args.float16:
+        model = model.half()
+        print(f"[+] Model converted to float16")
+
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # Training loop
