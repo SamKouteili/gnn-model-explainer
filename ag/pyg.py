@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, glob, argparse
+import os, json, glob, argparse, gc
 from typing import Dict, List, Tuple
 import torch
 
@@ -110,7 +110,7 @@ def main():
     args = ap.parse_args()
 
     master_path = args.master or os.path.join(args.data_dir, "vocabulary.json")
-    out_path = args.out or os.path.join(args.data_dir, "data.pt")
+    out_path = args.out or [os.path.join(args.data_dir, f"data{i}.pt") for i in range(0,6)]
 
     id2idx, idx2id = load_master_topology(master_path)
     print(f"[+] Master: {len(idx2id)} nodes")
@@ -118,6 +118,8 @@ def main():
     files = discover_files(args.data_dir)
     print(f"[+] Found {len(files)} JSON samples")
 
+    k = 0
+    BUNDLE_SIZE = 500
     graphs_plain: List[dict] = []
     for i, (p, lbl) in enumerate(files, 1):
         sample = build_plain_sample(
@@ -129,17 +131,20 @@ def main():
         graphs_plain.append(sample)
         if i % 50 == 0:
             print(f"  … processed {i}/{len(files)}")
-
-    bundle = {
-        "graphs": graphs_plain,          # list[dict of tensors]
-        "id2idx": id2idx,                # global mapping (dict[str,int])
-        "idx2id": idx2id,                # list[str]
-        "node_feature_keys": NODE_FEATURE_KEYS,
-        "add_is_active_flag": ADD_IS_ACTIVE_FLAG,
-        "dtype": "float16" if args.float16 else "float32",
-    }
-    torch.save(bundle, out_path)
-    print(f"[✓] Saved {len(graphs_plain)} samples to {out_path}")
+        if len(graphs_plain) == BUNDLE_SIZE :
+            bundle = {
+                "graphs": graphs_plain,          # list[dict of tensors]
+                "id2idx": id2idx,                # global mapping (dict[str,int])
+                "idx2id": idx2id,                # list[str]
+                "node_feature_keys": NODE_FEATURE_KEYS,
+                "add_is_active_flag": ADD_IS_ACTIVE_FLAG,
+              "dtype": "float16" if args.float16 else "float32",
+            }
+            b = i//BUNDLE_SIZE
+            torch.save(bundle, out_path[b])
+            graphs_plain.clear()
+            
+            print(f"[✓] Saved {len(graphs_plain)} samples to {out_path[b]}")
 
 if __name__ == "__main__":
     main()
