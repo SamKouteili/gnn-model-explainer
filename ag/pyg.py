@@ -102,7 +102,7 @@ def main():
     ap.add_argument("--float16", action="store_true", help="Store x/edge_attr as float16 to reduce size")
     args = ap.parse_args()
 
-    master_path = args.master or os.path.join(args.data_dir, "master_topology.json")
+    master_path = args.master or os.path.join(args.data_dir, "vocabulary.json")
     out_path = args.out or os.path.join(args.data_dir, "data.pt")
 
     id2idx, idx2id = load_master_topology(master_path)

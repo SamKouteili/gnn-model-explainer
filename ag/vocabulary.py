@@ -31,8 +31,9 @@ def build_master_topology(data_dir):
                     node_ids.add(n["node_id"])
 
                 for e in g.get("links", []):
-                    edges.add((e["source"], e["target"]))
-
+                    if e["weight"] > 1. or e["weight"] < -1.: 
+                        edges.add((e["source"], e["target"]))
+                print(f"-- {path} processed, edges: {len(edges)}")
             except Exception as ex:
                 print(f"[!] Failed to read {path}: {ex}")
 
@@ -47,7 +48,7 @@ def build_master_topology(data_dir):
     print(f"[+] Total unique edges: {len(edges)}")
 
     # Save to disk for reproducibility
-    out_path = os.path.join(data_dir, "master_topology.json")
+    out_path = os.path.join(data_dir, "vocabulary.json")
     with open(out_path, "w") as f:
         json.dump(
             {
