@@ -119,7 +119,7 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
     total = correct = 0
     loss_sum = 0.0
 
-    for _ in range(num_batches):
+    for i in range(num_batches):
         batch = sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=use_float16)
 
         if optimizer:
@@ -136,7 +136,7 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
         total += batch.y.size(0)
         correct += int((pred == batch.y.view(-1)).sum())
         loss_sum += float(loss) * batch.y.size(0)
-    
+        print(f"--- batch {i} completed")
     return loss_sum / max(total, 1), correct / max(total, 1)
 
 def main():
