@@ -199,7 +199,8 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
             optimizer.zero_grad()
 
         # Use autocast for mixed precision
-        with autocast(enabled=(scaler is not None)):
+        device_type = 'cuda' if device.type == 'cuda' else 'cpu'
+        with autocast(device_type=device_type, enabled=(scaler is not None)):
             out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
             loss = F.nll_loss(out, batch.y.view(-1))
 
