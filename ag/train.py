@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, random, os, glob
+import argparse, random, os, glob, time
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data, Batch
@@ -84,7 +84,7 @@ def load_graph_pair(data_dir, file_id, id2idx, use_float16=True):
                                      use_float16=use_float16)
     benign_graph = Data(**benign_data)
     benign_size_mb = sum(v.element_size() * v.nelement() for v in [benign_graph.x, benign_graph.edge_index, benign_graph.edge_attr]) / (1024**2)
-    print(f"[Graph] Benign {file_id}: {benign_size_mb:.2f} MB (nodes={benign_graph.x.size(0)}, edges={benign_graph.edge_index.size(1)})")
+    # print(f"[Graph] Benign {file_id}: {benign_size_mb:.2f} MB (nodes={benign_graph.x.size(0)}, edges={benign_graph.edge_index.size(1)})")
 
     injected_data = build_plain_sample(injected_path, id2idx, label=1,
                                        node_feature_keys=NODE_FEATURE_KEYS,
@@ -92,7 +92,7 @@ def load_graph_pair(data_dir, file_id, id2idx, use_float16=True):
                                        use_float16=use_float16)
     injected_graph = Data(**injected_data)
     injected_size_mb = sum(v.element_size() * v.nelement() for v in [injected_graph.x, injected_graph.edge_index, injected_graph.edge_attr]) / (1024**2)
-    print(f"[Graph] Injected {file_id}: {injected_size_mb:.2f} MB (nodes={injected_graph.x.size(0)}, edges={injected_graph.edge_index.size(1)})")
+    # print(f"[Graph] Injected {file_id}: {injected_size_mb:.2f} MB (nodes={injected_graph.x.size(0)}, edges={injected_graph.edge_index.size(1)})")
 
     return benign_graph, injected_graph
 
@@ -136,7 +136,7 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
         total += batch.y.size(0)
         correct += int((pred == batch.y.view(-1)).sum())
         loss_sum += float(loss) * batch.y.size(0)
-
+    
     return loss_sum / max(total, 1), correct / max(total, 1)
 
 def main():
@@ -196,12 +196,13 @@ def main():
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     # Training loop
+    start_time = time.time()
     for epoch in range(1, args.epochs + 1):
         tr_loss, tr_acc = run_epoch(model, args.data_dir, train_ids, args.batch_size, id2idx,
                                      optimizer=opt, device=device, use_float16=args.float16)
         va_loss, va_acc = run_epoch(model, args.data_dir, val_ids, args.batch_size, id2idx,
                                      optimizer=None, device=device, use_float16=args.float16)
-        print(f"epoch {epoch:03d} | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
+        print(f"epoch {epoch:03d} [{time.time() - start_time}s] | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
 
     # Test evaluation
     te_loss, te_acc = run_epoch(model, args.data_dir, test_ids, args.batch_size, id2idx,
