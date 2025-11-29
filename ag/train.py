@@ -4,6 +4,7 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data, Batch
 from torch_geometric.nn import GCNConv, global_mean_pool
+from torch.cuda.amp import autocast, GradScaler
 
 # Import conversion functions from pyg.py
 from pyg import load_master_topology, build_plain_sample, NODE_FEATURE_KEYS, ADD_IS_ACTIVE_FLAG
@@ -135,7 +136,7 @@ def sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=Tru
 
     return Batch.from_data_list(data_list).to(device)
 
-def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None, use_float16=True, max_num_files=None):
+def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None, use_float16=True, max_num_files=None, scaler=None):
     """Run one epoch by sampling batches on-the-fly."""
     model.train(optimizer is not None)
 
@@ -155,7 +156,10 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
         if optimizer:
             optimizer.zero_grad()
 
-        out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
+        # Use autocast for mixed precision
+        with autocast(enabled=(scaler is not None)):
+            out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
+            loss = F.nll_loss(out, batch.y.view(-1))
 
         # Check for NaN in output
         if torch.isnan(out).any():
@@ -163,15 +167,22 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
             print(f"[!] Input x has NaN: {torch.isnan(batch.x).any()}")
             print(f"[!] Output stats: min={out.min()}, max={out.max()}, mean={out.mean()}")
 
-        loss = F.nll_loss(out, batch.y.view(-1))
-
         if optimizer:
-            loss.backward()
-            # Gradient clipping to prevent NaN in float16
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            if i == 0 or torch.isnan(grad_norm):
-                print(f"--- batch {i} grad_norm: {grad_norm:.4f}")
-            optimizer.step()
+            if scaler is not None:
+                # Scaled backprop for mixed precision
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                if i == 0 or torch.isnan(grad_norm):
+                    print(f"--- batch {i} grad_norm: {grad_norm:.4f}")
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                if i == 0 or torch.isnan(grad_norm):
+                    print(f"--- batch {i} grad_norm: {grad_norm:.4f}")
+                optimizer.step()
 
         pred = out.argmax(dim=-1)
         total += batch.y.size(0)
@@ -232,31 +243,31 @@ def main():
     print(f"[+] Feature dim: {in_dim}, Num classes: {num_classes}")
     print(f"[+] Nodes per graph: {benign.x.size(0)}, Edges: {benign.edge_index.size(1)}")
 
-    # Initialize model
+    # Initialize model (keep in float32)
     model = GCNGraphClassifier(in_dim=in_dim, hidden=args.hidden, num_classes=num_classes).to(device)
 
-    # Convert model to float16 if requested
-    if args.float16:
-        model = model.half()
-        print(f"[+] Model converted to float16")
-
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+    # Use GradScaler for float16 training stability
+    scaler = GradScaler() if args.float16 else None
+    if args.float16:
+        print(f"[+] Using mixed precision training with GradScaler")
 
     # Training loop
     start_time = time.time()
     for epoch in range(1, args.epochs + 1):
         tr_loss, tr_acc = run_epoch(model, args.data_dir, train_ids, args.batch_size, id2idx,
                                      optimizer=opt, device=device, use_float16=args.float16,
-                                     max_num_files=args.max_num_files)
+                                     max_num_files=args.max_num_files, scaler=scaler)
         va_loss, va_acc = run_epoch(model, args.data_dir, val_ids, args.batch_size, id2idx,
                                      optimizer=None, device=device, use_float16=args.float16,
-                                     max_num_files=args.max_num_files)
+                                     max_num_files=args.max_num_files, scaler=scaler)
         print(f"[epoch] {epoch:03d} [{time.time() - start_time}s] | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
 
     # Test evaluation
     te_loss, te_acc = run_epoch(model, args.data_dir, test_ids, args.batch_size, id2idx,
                                  optimizer=None, device=device, use_float16=args.float16,
-                                 max_num_files=args.max_num_files)
+                                 max_num_files=args.max_num_files, scaler=scaler)
     print(f"[test] acc {te_acc:.3f} loss {te_loss:.4f}")
 
     # Save model
