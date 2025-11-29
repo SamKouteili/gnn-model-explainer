@@ -55,7 +55,11 @@ def split_ids(file_ids, train_ratio=0.8, val_ratio=0.1, seed=42):
     return train_ids, val_ids, test_ids
 
 def load_graph_pair(data_dir, file_id, id2idx, use_float16=True):
-    """Load one benign and one random injected variant for a given file ID."""
+    """Load one benign and one random injected variant for a given file ID.
+
+    Returns:
+        Tuple of (benign_graph, injected_graph) or None if files are corrupted.
+    """
     benign_path = os.path.join(data_dir, "benign", f"{file_id}.json")
 
     # Try to find injected variant (with fallback for data_small format)
@@ -78,43 +82,69 @@ def load_graph_pair(data_dir, file_id, id2idx, use_float16=True):
         injected_path = os.path.join(data_dir, "injected", f"{file_id}{variant}")
 
     # Convert both to PyG Data objects with float16 for memory savings
-    benign_data = build_plain_sample(benign_path, id2idx, label=0,
-                                     node_feature_keys=NODE_FEATURE_KEYS,
-                                     add_is_active_flag=ADD_IS_ACTIVE_FLAG,
-                                     use_float16=use_float16)
-    benign_graph = Data(**benign_data)
-    benign_size_mb = sum(v.element_size() * v.nelement() for v in [benign_graph.x, benign_graph.edge_index, benign_graph.edge_attr]) / (1024**2)
-    # print(f"[Graph] Benign {file_id}: {benign_size_mb:.2f} MB (nodes={benign_graph.x.size(0)}, edges={benign_graph.edge_index.size(1)})")
+    try:
+        benign_data = build_plain_sample(benign_path, id2idx, label=0,
+                                         node_feature_keys=NODE_FEATURE_KEYS,
+                                         add_is_active_flag=ADD_IS_ACTIVE_FLAG,
+                                         use_float16=use_float16)
+        benign_graph = Data(**benign_data)
+    except Exception as e:
+        print(f"[!] CORRUPTED FILE (benign): {benign_path}")
+        print(f"[!] Error: {e}")
+        return None
 
-    injected_data = build_plain_sample(injected_path, id2idx, label=1,
-                                       node_feature_keys=NODE_FEATURE_KEYS,
-                                       add_is_active_flag=ADD_IS_ACTIVE_FLAG,
-                                       use_float16=use_float16)
-    injected_graph = Data(**injected_data)
-    injected_size_mb = sum(v.element_size() * v.nelement() for v in [injected_graph.x, injected_graph.edge_index, injected_graph.edge_attr]) / (1024**2)
-    # print(f"[Graph] Injected {file_id}: {injected_size_mb:.2f} MB (nodes={injected_graph.x.size(0)}, edges={injected_graph.edge_index.size(1)})")
+    try:
+        injected_data = build_plain_sample(injected_path, id2idx, label=1,
+                                           node_feature_keys=NODE_FEATURE_KEYS,
+                                           add_is_active_flag=ADD_IS_ACTIVE_FLAG,
+                                           use_float16=use_float16)
+        injected_graph = Data(**injected_data)
+    except Exception as e:
+        print(f"[!] CORRUPTED FILE (injected): {injected_path}")
+        print(f"[!] Error: {e}")
+        return None
 
     return benign_graph, injected_graph
 
-def sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=True):
-    """Sample a balanced batch: batch_size benign + batch_size injected."""
-    sampled_ids = random.sample(file_ids, min(batch_size, len(file_ids)))
+def sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=True, max_retries=10):
+    """Sample a balanced batch: batch_size benign + batch_size injected.
 
+    Handles corrupted files by retrying with different samples.
+    """
     data_list = []
-    for file_id in sampled_ids:
-        benign, injected = load_graph_pair(data_dir, file_id, id2idx, use_float16=use_float16)
-        data_list.append(benign)
-        data_list.append(injected)
+    attempts = 0
+    available_ids = list(file_ids)
+
+    while len(data_list) < batch_size * 2 and attempts < max_retries and available_ids:
+        # Sample one file ID
+        file_id = random.choice(available_ids)
+        available_ids.remove(file_id)
+
+        result = load_graph_pair(data_dir, file_id, id2idx, use_float16=use_float16)
+
+        if result is not None:
+            benign, injected = result
+            data_list.append(benign)
+            data_list.append(injected)
+        else:
+            # Corrupted file, will try another
+            attempts += 1
+
+    if len(data_list) == 0:
+        raise RuntimeError(f"Failed to load any valid graphs after {max_retries} attempts")
 
     return Batch.from_data_list(data_list).to(device)
 
-def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None, use_float16=True):
+def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None, use_float16=True, max_num_files=None):
     """Run one epoch by sampling batches on-the-fly."""
     model.train(optimizer is not None)
 
     # Calculate number of batches
     if num_batches is None:
-        num_batches = max(1, len(file_ids) // batch_size)
+        effective_files = len(file_ids)
+        if max_num_files is not None and max_num_files < effective_files:
+            effective_files = max_num_files
+        num_batches = max(1, effective_files // batch_size)
 
     total = correct = 0
     loss_sum = 0.0
@@ -137,6 +167,7 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
         correct += int((pred == batch.y.view(-1)).sum())
         loss_sum += float(loss) * batch.y.size(0)
         print(f"--- batch {i} completed")
+    
     return loss_sum / max(total, 1), correct / max(total, 1)
 
 def main():
@@ -154,12 +185,15 @@ def main():
     ap.add_argument("--val-ratio", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--float16", action="store_true", help="Use float16 for node/edge features to save memory")
+    ap.add_argument("--max-num-files", type=int, default=None, help="Maximum number of file IDs to use per epoch (actual graphs will be 2x this)")
     args = ap.parse_args()
 
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
     print(f"[+] Using device: {device}")
     print(f"[+] Using float16: {args.float16}")
     print(f"[+] Batch size: {args.batch_size} IDs ({args.batch_size * 2} graphs per batch)")
+    if args.max_num_files is not None:
+        print(f"[+] Max files per epoch: {args.max_num_files} ({args.max_num_files * 2} graphs)")
 
     # Load vocabulary
     vocab_path = args.vocabulary or os.path.join(args.data_dir, "vocabulary.json")
@@ -199,14 +233,17 @@ def main():
     start_time = time.time()
     for epoch in range(1, args.epochs + 1):
         tr_loss, tr_acc = run_epoch(model, args.data_dir, train_ids, args.batch_size, id2idx,
-                                     optimizer=opt, device=device, use_float16=args.float16)
+                                     optimizer=opt, device=device, use_float16=args.float16,
+                                     max_num_files=args.max_num_files)
         va_loss, va_acc = run_epoch(model, args.data_dir, val_ids, args.batch_size, id2idx,
-                                     optimizer=None, device=device, use_float16=args.float16)
-        print(f"epoch {epoch:03d} [{time.time() - start_time}s] | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
+                                     optimizer=None, device=device, use_float16=args.float16,
+                                     max_num_files=args.max_num_files)
+        print(f"[epoch] {epoch:03d} [{time.time() - start_time}s] | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
 
     # Test evaluation
     te_loss, te_acc = run_epoch(model, args.data_dir, test_ids, args.batch_size, id2idx,
-                                 optimizer=None, device=device, use_float16=args.float16)
+                                 optimizer=None, device=device, use_float16=args.float16,
+                                 max_num_files=args.max_num_files)
     print(f"[test] acc {te_acc:.3f} loss {te_loss:.4f}")
 
     # Save model

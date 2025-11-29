@@ -25,8 +25,13 @@ def build_plain_sample(
     use_float16: bool = False,
 ) -> dict:
     """Convert one JSON into a plain dict of tensors (no PyG classes)."""
-    with open(json_path, "r") as f:
-        g = json.load(f)
+    try:
+        with open(json_path, "r") as f:
+            g = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"[!] JSON decode error in file: {json_path}")
+        print(f"[!] Error: {e}")
+        raise
 
     N = len(id2idx)
     F = len(node_feature_keys) + (1 if add_is_active_flag else 0)
