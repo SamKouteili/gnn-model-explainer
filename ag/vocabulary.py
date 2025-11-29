@@ -25,14 +25,21 @@ def build_master_topology(data_dir):
             try:
                 with open(path, "r") as f:
                     g = json.load(f)
+                
+                clt_in_graph = set()
+
 
                 for n in g.get("nodes", []):
-                    #if n["feature_type"] == "cross layer transcoder":
-                    node_ids.add(n["node_id"])
+                    if n["feature_type"] == "cross layer transcoder":
+                        this_graph
+                        clt_in_graph.add(n["node_id"])
 
                 for e in g.get("links", []):
                     if e["weight"] > 1. or e["weight"] < -1.: 
-                        edges.add((e["source"], e["target"]))
+                        if e["source"] in clt_in_graph and e["target"] in clt_in_graph:
+                            edges.add((e["source"], e["target"]))
+                
+                node_ids += clt_in_graph
                 print(f"-- {path} processed, edges: {len(edges)}")
             except Exception as ex:
                 print(f"[!] Failed to read {path}: {ex}")
