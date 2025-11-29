@@ -167,6 +167,10 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
 
         if optimizer:
             loss.backward()
+            # Gradient clipping to prevent NaN in float16
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if i == 0 or torch.isnan(grad_norm):
+                print(f"--- batch {i} grad_norm: {grad_norm:.4f}")
             optimizer.step()
 
         pred = out.argmax(dim=-1)
