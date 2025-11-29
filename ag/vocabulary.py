@@ -54,7 +54,7 @@ def build_master_topology(data_dir):
     print(f"[+] Total unique edges: {len(edges)}")
 
     # Save to disk for reproducibility
-    out_path = os.path.join(data_dir, "vocabuary.json")
+    out_path = os.path.join(data_dir, "vocabulary.json")
     with open(out_path, "w") as f:
         json.dump(
             {

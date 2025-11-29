@@ -82,13 +82,19 @@ def load_graph_pair(data_dir, file_id, id2idx, use_float16=True):
                                      node_feature_keys=NODE_FEATURE_KEYS,
                                      add_is_active_flag=ADD_IS_ACTIVE_FLAG,
                                      use_float16=use_float16)
+    benign_graph = Data(**benign_data)
+    benign_size_mb = sum(v.element_size() * v.nelement() for v in [benign_graph.x, benign_graph.edge_index, benign_graph.edge_attr]) / (1024**2)
+    print(f"[Graph] Benign {file_id}: {benign_size_mb:.2f} MB (nodes={benign_graph.x.size(0)}, edges={benign_graph.edge_index.size(1)})")
 
     injected_data = build_plain_sample(injected_path, id2idx, label=1,
                                        node_feature_keys=NODE_FEATURE_KEYS,
                                        add_is_active_flag=ADD_IS_ACTIVE_FLAG,
                                        use_float16=use_float16)
+    injected_graph = Data(**injected_data)
+    injected_size_mb = sum(v.element_size() * v.nelement() for v in [injected_graph.x, injected_graph.edge_index, injected_graph.edge_attr]) / (1024**2)
+    print(f"[Graph] Injected {file_id}: {injected_size_mb:.2f} MB (nodes={injected_graph.x.size(0)}, edges={injected_graph.edge_index.size(1)})")
 
-    return Data(**benign_data), Data(**injected_data)
+    return benign_graph, injected_graph
 
 def sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=True):
     """Sample a balanced batch: batch_size benign + batch_size injected."""
