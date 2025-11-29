@@ -156,6 +156,13 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
             optimizer.zero_grad()
 
         out = model(batch.x, batch.edge_index, batch.batch, edge_attr=batch.edge_attr)
+
+        # Check for NaN in output
+        if torch.isnan(out).any():
+            print(f"[!] NaN detected in model output at batch {i}")
+            print(f"[!] Input x has NaN: {torch.isnan(batch.x).any()}")
+            print(f"[!] Output stats: min={out.min()}, max={out.max()}, mean={out.mean()}")
+
         loss = F.nll_loss(out, batch.y.view(-1))
 
         if optimizer:
@@ -166,7 +173,9 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
         total += batch.y.size(0)
         correct += int((pred == batch.y.view(-1)).sum())
         loss_sum += float(loss) * batch.y.size(0)
-        print(f"--- batch {i} completed")
+
+        if i == 0:  # Print first batch details
+            print(f"--- batch {i} completed | loss: {float(loss):.4f}, acc: {int((pred == batch.y.view(-1)).sum())}/{batch.y.size(0)}")
     
     return loss_sum / max(total, 1), correct / max(total, 1)
 
