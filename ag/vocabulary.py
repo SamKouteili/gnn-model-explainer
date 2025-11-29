@@ -31,7 +31,6 @@ def build_master_topology(data_dir):
 
                 for n in g.get("nodes", []):
                     if n["feature_type"] == "cross layer transcoder":
-                        this_graph
                         clt_in_graph.add(n["node_id"])
 
                 for e in g.get("links", []):
@@ -39,7 +38,7 @@ def build_master_topology(data_dir):
                         if e["source"] in clt_in_graph and e["target"] in clt_in_graph:
                             edges.add((e["source"], e["target"]))
                 
-                node_ids += clt_in_graph
+                node_ids |= clt_in_graph
                 print(f"-- {path} processed, edges: {len(edges)}")
             except Exception as ex:
                 print(f"[!] Failed to read {path}: {ex}")
@@ -55,7 +54,7 @@ def build_master_topology(data_dir):
     print(f"[+] Total unique edges: {len(edges)}")
 
     # Save to disk for reproducibility
-    out_path = os.path.join(data_dir, "vocabulary.json")
+    out_path = os.path.join(data_dir, "vocabuary.json")
     with open(out_path, "w") as f:
         json.dump(
             {
