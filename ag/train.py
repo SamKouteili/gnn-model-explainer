@@ -254,7 +254,7 @@ def main():
     ap.add_argument("--max-num-files", type=int, default=None, help="Maximum number of file IDs to use per epoch (actual graphs will be 2x this)")
     args = ap.parse_args()
 
-    os.makedirs(args.out, exists_ok=True)
+    os.makedirs(args.out, exist_ok=True)
 
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
     print(f"[+] Using device: {device}")
