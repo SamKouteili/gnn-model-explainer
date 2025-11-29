@@ -4,7 +4,10 @@ import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data, Batch
 from torch_geometric.nn import GCNConv, global_mean_pool
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
+import matplotlib
+matplotlib.use('Agg')  # Non-interactive backend
+import matplotlib.pyplot as plt
 
 # Import conversion functions from pyg.py
 from pyg import load_master_topology, build_plain_sample, NODE_FEATURE_KEYS, ADD_IS_ACTIVE_FLAG
@@ -17,14 +20,53 @@ class GCNGraphClassifier(torch.nn.Module):
         self.lin   = torch.nn.Linear(hidden, num_classes)
 
     def forward(self, x, edge_index, batch, edge_attr=None):
-        # Ignore edge_attr - GCNConv cannot handle negative edge weights
-        x = F.relu(self.conv1(x, edge_index, edge_weight=None))
+        # Use absolute value of edge weights (GCNConv cannot handle negative weights)
+        edge_weight = None
+        if edge_attr is not None:
+            edge_weight = edge_attr.abs().squeeze(-1)  # [E, 1] -> [E] with abs values
+
+        x = F.relu(self.conv1(x, edge_index, edge_weight=edge_weight))
         x = F.dropout(x, p=0.5, training=self.training)
-        x = F.relu(self.conv2(x, edge_index, edge_weight=None))
+        x = F.relu(self.conv2(x, edge_index, edge_weight=edge_weight))
         x = global_mean_pool(x, batch)
         return F.log_softmax(self.lin(x), dim=-1)
 
 INJECTED_VARIANTS = ["-nve.json", "-cmp.json", "-esc.json", "-ign.json"]
+
+def find_latest_checkpoint(checkpoint_dir):
+    """Find the latest checkpoint file in the directory.
+
+    Returns:
+        tuple: (checkpoint_path, start_epoch, history) or (None, 1, {}) if no checkpoint found
+    """
+    checkpoint_files = glob.glob(os.path.join(checkpoint_dir, "gcn*.pt"))
+    if not checkpoint_files:
+        return None, 1, {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+
+    # Extract epoch numbers and find the latest
+    checkpoints = []
+    for path in checkpoint_files:
+        basename = os.path.basename(path)
+        if basename.startswith("gcn") and basename.endswith(".pt"):
+            try:
+                # Extract epoch number from gcnXXX.pt
+                epoch_str = basename[3:-3]  # Remove "gcn" and ".pt"
+                epoch = int(epoch_str)
+                checkpoints.append((epoch, path))
+            except ValueError:
+                continue
+
+    if not checkpoints:
+        return None, 1, {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []}
+
+    # Get the latest checkpoint
+    latest_epoch, latest_path = max(checkpoints, key=lambda x: x[0])
+    print(f"[+] Found checkpoint: {latest_path} (epoch {latest_epoch})")
+
+    checkpoint = torch.load(latest_path)
+    history = checkpoint.get("history", {"train_loss": [], "train_acc": [], "val_loss": [], "val_acc": []})
+
+    return latest_path, latest_epoch + 1, history
 
 def discover_file_ids(data_dir):
     """Discover all base file IDs (e.g., '0', '1', '2') from benign directory."""
@@ -173,15 +215,15 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                if i == 0 or torch.isnan(grad_norm):
-                    print(f"--- batch {i} grad_norm: {grad_norm:.4f}")
+                if torch.isnan(grad_norm):
+                    print(f"[NaN GradNorm] batch {i} grad_norm: {grad_norm:.4f}")
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
                 grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 if i == 0 or torch.isnan(grad_norm):
-                    print(f"--- batch {i} grad_norm: {grad_norm:.4f}")
+                    print(f"[NaN GradNorm] batch {i} grad_norm: {grad_norm:.4f}")
                 optimizer.step()
 
         pred = out.argmax(dim=-1)
@@ -204,13 +246,15 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--cuda", action="store_true")
-    ap.add_argument("--output", type=str, default="trained_gcn.pt")
+    ap.add_argument("--out", type=str, default="models")
     ap.add_argument("--train-ratio", type=float, default=0.8)
     ap.add_argument("--val-ratio", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--float16", action="store_true", help="Use float16 for node/edge features to save memory")
     ap.add_argument("--max-num-files", type=int, default=None, help="Maximum number of file IDs to use per epoch (actual graphs will be 2x this)")
     args = ap.parse_args()
+
+    os.makedirs(args.out, exists_ok=True)
 
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
     print(f"[+] Using device: {device}")
@@ -253,9 +297,28 @@ def main():
     if args.float16:
         print(f"[+] Using mixed precision training with GradScaler")
 
+    # Check for existing checkpoints
+    checkpoint_path, start_epoch, history = find_latest_checkpoint(args.out)
+    if checkpoint_path is not None:
+        checkpoint = torch.load(checkpoint_path)
+        model.load_state_dict(checkpoint["state_dict"])
+        opt.load_state_dict(checkpoint["optimizer"])
+        if scaler is not None and "scaler" in checkpoint:
+            scaler.load_state_dict(checkpoint["scaler"])
+        print(f"[+] Resumed from epoch {start_epoch - 1}")
+    else:
+        print(f"[+] Starting training from scratch")
+
+    # Calculate checkpoint epochs (1/4, 2/4, 3/4)
+    checkpoint_epochs = {
+        args.epochs // 4,
+        args.epochs // 2,
+        (3 * args.epochs) // 4
+    }
+
     # Training loop
     start_time = time.time()
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         tr_loss, tr_acc = run_epoch(model, args.data_dir, train_ids, args.batch_size, id2idx,
                                      optimizer=opt, device=device, use_float16=args.float16,
                                      max_num_files=args.max_num_files, scaler=scaler)
@@ -264,20 +327,70 @@ def main():
                                      max_num_files=args.max_num_files, scaler=scaler)
         print(f"[epoch] {epoch:03d} [{time.time() - start_time}s] | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
 
+        # Save history
+        history["train_loss"].append(tr_loss)
+        history["train_acc"].append(tr_acc)
+        history["val_loss"].append(va_loss)
+        history["val_acc"].append(va_acc)
+
+        # Save checkpoint at 1/4, 2/4, 3/4 epochs
+        if epoch in checkpoint_epochs:
+            checkpoint_data = {
+                "epoch": epoch,
+                "state_dict": model.state_dict(),
+                "optimizer": opt.state_dict(),
+                "history": history,
+                "in_dim": in_dim,
+                "num_classes": num_classes,
+                "hidden": args.hidden
+            }
+            if scaler is not None:
+                checkpoint_data["scaler"] = scaler.state_dict()
+
+            checkpoint_file = os.path.join(args.out, f"gcn{epoch:03d}.pt")
+            torch.save(checkpoint_data, checkpoint_file)
+            print(f"[+] Saved checkpoint: {os.path.basename(checkpoint_file)}")
+
     # Test evaluation
     te_loss, te_acc = run_epoch(model, args.data_dir, test_ids, args.batch_size, id2idx,
                                  optimizer=None, device=device, use_float16=args.float16,
                                  max_num_files=args.max_num_files, scaler=scaler)
     print(f"[test] acc {te_acc:.3f} loss {te_loss:.4f}")
 
-    # Save model
-    torch.save({
+    # Save final model
+    final_path = os.path.join(args.out, "ag_gcn.pt")
+    final_checkpoint = {
+        "epoch": args.epochs,
         "state_dict": model.state_dict(),
+        "optimizer": opt.state_dict(),
+        "history": history,
         "in_dim": in_dim,
         "num_classes": num_classes,
-        "hidden": args.hidden
-    }, args.output)
-    print(f"[✓] Saved trained model to {args.output}")
+        "hidden": args.hidden,
+        "test_loss": te_loss,
+        "test_acc": te_acc
+    }
+    if scaler is not None:
+        final_checkpoint["scaler"] = scaler.state_dict()
+    torch.save(final_checkpoint, final_path)
+    print(f"[✓] Saved final model to {final_path}")
+
+    # Plot training history
+    if len(history["train_loss"]) > 0:
+        plot_path = os.path.join(args.out, "training_loss.png")
+        plt.figure(figsize=(10, 6))
+        epochs_range = range(1, len(history["train_loss"]) + 1)
+        plt.plot(epochs_range, history["train_loss"], 'b-', label='Train Loss', linewidth=2)
+        plt.plot(epochs_range, history["val_loss"], 'r-', label='Val Loss', linewidth=2)
+        plt.xlabel('Epoch', fontsize=12)
+        plt.ylabel('Loss', fontsize=12)
+        plt.title('Training and Validation Loss Over Time', fontsize=14)
+        plt.legend(fontsize=10)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(plot_path, dpi=150)
+        print(f"[✓] Saved loss plot to {plot_path}")
+        plt.close()
 
 if __name__ == "__main__":
     main()
