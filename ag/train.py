@@ -20,10 +20,16 @@ class GCNGraphClassifier(torch.nn.Module):
         self.lin   = torch.nn.Linear(hidden, num_classes)
 
     def forward(self, x, edge_index, batch, edge_attr=None):
+        # Convert float16 input to float32 for computation
+        if x.dtype == torch.float16:
+            x = x.float()
+
         # Use absolute value of edge weights (GCNConv cannot handle negative weights)
         edge_weight = None
         if edge_attr is not None:
             edge_weight = edge_attr.abs().squeeze(-1)  # [E, 1] -> [E] with abs values
+            if edge_weight.dtype == torch.float16:
+                edge_weight = edge_weight.float()
 
         x = F.relu(self.conv1(x, edge_index, edge_weight=edge_weight))
         x = F.dropout(x, p=0.5, training=self.training)
