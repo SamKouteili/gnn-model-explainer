@@ -153,19 +153,91 @@ def main():
     )
     print(f"[✓] Generated explanations: {explanation.available_explanations}")
 
-    # Save visualizations
+    # Extract important nodes and edges with their IDs
+    import numpy as np
+
+    node_mask = explanation.node_mask.cpu().numpy()
+    edge_mask = explanation.edge_mask.cpu().numpy()
+
+    # Find active nodes (non-zero features)
+    active_mask = (to_explain.x.cpu() != 0).any(dim=1).numpy()
+    num_active = active_mask.sum()
+
+    print(f"\n[+] Graph has {num_active} active nodes out of {len(active_mask)} total")
+    print(f"[+] Node mask shape: {node_mask.shape}, Edge mask shape: {edge_mask.shape}")
+
+    # Get top-k important nodes (among ALL nodes, including zeros)
+    top_k = min(50, len(node_mask))
+    top_node_indices = np.argsort(node_mask)[::-1][:top_k]
+
+    # Filter to only active nodes
+    top_active_nodes = [(idx, node_mask[idx]) for idx in top_node_indices if active_mask[idx]][:20]
+
+    print(f"\n{'='*80}")
+    print(f"TOP 20 IMPORTANT NODES (with actual activity):")
+    print(f"{'='*80}")
+    for idx, score in top_active_nodes:
+        node_id = idx2id[idx]
+        features = to_explain.x[idx].cpu().numpy()
+        print(f"  {node_id:40s} | score: {score:.4f} | features: {features}")
+
+    # Get top-k important edges
+    top_k_edges = min(20, len(edge_mask))
+    top_edge_indices = np.argsort(edge_mask)[::-1][:top_k_edges]
+
+    edge_index_np = to_explain.edge_index.cpu().numpy()
+    print(f"\n{'='*80}")
+    print(f"TOP 20 IMPORTANT EDGES:")
+    print(f"{'='*80}")
+    for edge_idx in top_edge_indices:
+        src_idx = edge_index_np[0, edge_idx]
+        dst_idx = edge_index_np[1, edge_idx]
+        src_id = idx2id[src_idx]
+        dst_id = idx2id[dst_idx]
+        score = edge_mask[edge_idx]
+        edge_weight = to_explain.edge_attr[edge_idx].item() if to_explain.edge_attr is not None else 1.0
+        print(f"  {src_id:30s} -> {dst_id:30s} | score: {score:.4f} | weight: {edge_weight:.4f}")
+
+    # Save results to file
     os.makedirs(args.output_dir, exist_ok=True)
+
+    results_file = os.path.join(args.output_dir, "important_nodes_edges.txt")
+    with open(results_file, 'w') as f:
+        f.write(f"Explanation for: {graph_path}\n")
+        f.write(f"Model prediction: {explanation.prediction.cpu().numpy()}\n\n")
+
+        f.write("TOP 20 IMPORTANT NODES:\n")
+        f.write("="*80 + "\n")
+        for idx, score in top_active_nodes:
+            node_id = idx2id[idx]
+            features = to_explain.x[idx].cpu().numpy()
+            f.write(f"{node_id:40s} | score: {score:.4f} | features: {features}\n")
+
+        f.write("\n\nTOP 20 IMPORTANT EDGES:\n")
+        f.write("="*80 + "\n")
+        for edge_idx in top_edge_indices:
+            src_idx = edge_index_np[0, edge_idx]
+            dst_idx = edge_index_np[1, edge_idx]
+            src_id = idx2id[src_idx]
+            dst_id = idx2id[dst_idx]
+            score = edge_mask[edge_idx]
+            edge_weight = to_explain.edge_attr[edge_idx].item() if to_explain.edge_attr is not None else 1.0
+            f.write(f"{src_id:30s} -> {dst_id:30s} | score: {score:.4f} | weight: {edge_weight:.4f}\n")
+
+    print(f"\n[✓] Saved important nodes/edges to {results_file}")
+
+    # Save visualizations
     try:
         feat_path = os.path.join(args.output_dir, "feature_importance.png")
-        explanation.visualize_feature_importance(feat_path, top_k=10)
+        explanation.visualize_feature_importance(feat_path, top_k=3)
         print(f"[✓] Saved feature importance to {feat_path}")
     except Exception as e:
         print(f"[!] Feature importance visualization failed: {e}")
 
     try:
-        graph_path = os.path.join(args.output_dir, "subgraph.pdf")
-        explanation.visualize_graph(graph_path)
-        print(f"[✓] Saved subgraph visualization to {graph_path}")
+        graph_viz_path = os.path.join(args.output_dir, "subgraph.pdf")
+        explanation.visualize_graph(graph_viz_path)
+        print(f"[✓] Saved subgraph visualization to {graph_viz_path}")
     except Exception as e:
         print(f"[!] Subgraph visualization failed: {e}")
 
