@@ -27,7 +27,7 @@ def main():
     ap.add_argument("model_path", type=str, help="Path to trained model .pt file")
     ap.add_argument("bundle_path", type=str, help="Path to data bundle")
     ap.add_argument("--graph-idx", type=int, default=0, help="Index of graph to explain")
-    ap.add_argument("--explainer-epochs", type=int, default=500)
+    ap.add_argument("--explainer-epochs", type=int, default=100)
     ap.add_argument("--output-dir", type=str, default="explanations")
     ap.add_argument("--cuda", action="store_true")
     args = ap.parse_args()
