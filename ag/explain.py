@@ -156,8 +156,8 @@ def main():
     # Extract important nodes and edges with their IDs
     import numpy as np
 
-    node_mask = explanation.node_mask.cpu().numpy()
-    edge_mask = explanation.edge_mask.cpu().numpy()
+    node_mask = explanation.node_mask.cpu().numpy().squeeze()  # Remove singleton dimensions
+    edge_mask = explanation.edge_mask.cpu().numpy().squeeze()
 
     # Find active nodes (non-zero features)
     active_mask = (to_explain.x.cpu() != 0).any(dim=1).numpy()
@@ -170,8 +170,8 @@ def main():
     top_k = min(50, len(node_mask))
     top_node_indices = np.argsort(node_mask)[::-1][:top_k]
 
-    # Filter to only active nodes (convert to bool explicitly)
-    top_active_nodes = [(idx, node_mask[idx]) for idx in top_node_indices if bool(active_mask[idx])][:20]
+    # Filter to only active nodes
+    top_active_nodes = [(idx, float(node_mask[idx])) for idx in top_node_indices if active_mask[idx]][:20]
 
     print(f"\n{'='*80}")
     print(f"TOP 20 IMPORTANT NODES (with actual activity):")
