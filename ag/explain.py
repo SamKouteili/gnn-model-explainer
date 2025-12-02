@@ -133,7 +133,7 @@ def main():
         model=model,
         algorithm=GNNExplainer(epochs=args.explainer_epochs),
         explanation_type="model",
-        node_mask_type="attributes",
+        node_mask_type="object",  # Per-node importance (not per-feature)
         edge_mask_type="object",
         model_config=dict(
             mode="multiclass_classification",
