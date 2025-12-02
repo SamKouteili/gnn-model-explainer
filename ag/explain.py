@@ -63,11 +63,41 @@ def main():
     in_dim = checkpoint["in_dim"]
     num_classes = checkpoint["num_classes"]
     hidden = checkpoint.get("hidden", 128)
-    num_layers = checkpoint.get("num_layers", 2)
-    dropout = checkpoint.get("dropout", 0.5)
 
-    model = GCNGraphClassifier(in_dim=in_dim, hidden=hidden, num_classes=num_classes,
-                                num_layers=num_layers, dropout=dropout).to(device)
+    # Check if this is an old checkpoint (has conv1/conv2 instead of num_layers)
+    if "num_layers" not in checkpoint:
+        print("[!] Old checkpoint detected - using legacy 2-layer model")
+        # Use old architecture
+        class OldGCNGraphClassifier(torch.nn.Module):
+            def __init__(self, in_dim: int, hidden: int = 128, num_classes: int = 2):
+                super().__init__()
+                self.conv1 = GCNConv(in_dim, hidden)
+                self.conv2 = GCNConv(hidden, hidden)
+                self.lin = torch.nn.Linear(hidden, num_classes)
+
+            def forward(self, x, edge_index, batch, edge_attr=None):
+                if x.dtype == torch.float16:
+                    x = x.float()
+                edge_weight = None
+                if edge_attr is not None:
+                    edge_weight = edge_attr.abs().squeeze(-1)
+                    if edge_weight.dtype == torch.float16:
+                        edge_weight = edge_weight.float()
+
+                x = F.relu(self.conv1(x, edge_index, edge_weight=edge_weight))
+                x = F.dropout(x, p=0.5, training=self.training)
+                x = F.relu(self.conv2(x, edge_index, edge_weight=edge_weight))
+                x = global_mean_pool(x, batch)
+                return F.log_softmax(self.lin(x), dim=-1)
+
+        model = OldGCNGraphClassifier(in_dim=in_dim, hidden=hidden, num_classes=num_classes).to(device)
+    else:
+        # New architecture
+        num_layers = checkpoint.get("num_layers", 2)
+        dropout = checkpoint.get("dropout", 0.5)
+        model = GCNGraphClassifier(in_dim=in_dim, hidden=hidden, num_classes=num_classes,
+                                    num_layers=num_layers, dropout=dropout).to(device)
+
     model.load_state_dict(checkpoint["state_dict"])
     model.eval()
     print(f"[✓] Loaded model from {args.model_path}")
