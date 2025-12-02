@@ -13,11 +13,18 @@ import matplotlib.pyplot as plt
 from pyg import load_master_topology, build_plain_sample, NODE_FEATURE_KEYS, ADD_IS_ACTIVE_FLAG
 
 class GCNGraphClassifier(torch.nn.Module):
-    def __init__(self, in_dim: int, hidden: int = 128, num_classes: int = 2):
+    def __init__(self, in_dim: int, hidden: int = 128, num_classes: int = 2, num_layers: int = 2, dropout: float = 0.5):
         super().__init__()
-        self.conv1 = GCNConv(in_dim, hidden)
-        self.conv2 = GCNConv(hidden, hidden)
-        self.lin   = torch.nn.Linear(hidden, num_classes)
+        self.num_layers = num_layers
+        self.dropout = dropout
+
+        # Create variable number of GCN layers
+        self.convs = torch.nn.ModuleList()
+        self.convs.append(GCNConv(in_dim, hidden))
+        for _ in range(num_layers - 1):
+            self.convs.append(GCNConv(hidden, hidden))
+
+        self.lin = torch.nn.Linear(hidden, num_classes)
 
     def forward(self, x, edge_index, batch, edge_attr=None):
         # Convert float16 input to float32 for computation
@@ -31,9 +38,12 @@ class GCNGraphClassifier(torch.nn.Module):
             if edge_weight.dtype == torch.float16:
                 edge_weight = edge_weight.float()
 
-        x = F.relu(self.conv1(x, edge_index, edge_weight=edge_weight))
-        x = F.dropout(x, p=0.5, training=self.training)
-        x = F.relu(self.conv2(x, edge_index, edge_weight=edge_weight))
+        # Apply GCN layers
+        for i, conv in enumerate(self.convs):
+            x = F.relu(conv(x, edge_index, edge_weight=edge_weight))
+            if i < len(self.convs) - 1:  # Don't dropout after last layer
+                x = F.dropout(x, p=self.dropout, training=self.training)
+
         x = global_mean_pool(x, batch)
         return F.log_softmax(self.lin(x), dim=-1)
 
@@ -184,7 +194,7 @@ def sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=Tru
 
     return Batch.from_data_list(data_list).to(device)
 
-def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None, use_float16=True, max_num_files=None, scaler=None):
+def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, device="cpu", num_batches=None, use_float16=True, max_num_files=None, scaler=None, grad_clip=1.0):
     """Run one epoch by sampling batches on-the-fly."""
     model.train(optimizer is not None)
 
@@ -220,14 +230,14 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
                 # Scaled backprop for mixed precision
                 scaler.scale(loss).backward()
                 scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
                 if torch.isnan(grad_norm):
                     print(f"[NaN GradNorm] batch {i} grad_norm: {grad_norm:.4f}")
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
                 if i == 0 or torch.isnan(grad_norm):
                     print(f"[NaN GradNorm] batch {i} grad_norm: {grad_norm:.4f}")
                 optimizer.step()
@@ -249,16 +259,24 @@ def main():
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=4, help="Number of IDs to sample per batch (actual batch will be 2x this)")
     ap.add_argument("--hidden", type=int, default=128)
+    ap.add_argument("--num-layers", type=int, default=2, help="Number of GCN layers")
+    ap.add_argument("--dropout", type=float, default=0.5, help="Dropout rate")
     ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--grad-clip", type=float, default=1.0, help="Gradient clipping max norm")
     ap.add_argument("--weight-decay", type=float, default=1e-4)
     ap.add_argument("--cuda", action="store_true")
-    ap.add_argument("--out", type=str, default="models")
+    ap.add_argument("--out", type=str, default=None, help="Output directory (auto-generated if not specified)")
     ap.add_argument("--train-ratio", type=float, default=0.8)
     ap.add_argument("--val-ratio", type=float, default=0.1)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--float16", action="store_true", help="Use float16 for node/edge features to save memory")
     ap.add_argument("--max-num-files", type=int, default=None, help="Maximum number of file IDs to use per epoch (actual graphs will be 2x this)")
     args = ap.parse_args()
+
+    # Auto-generate output directory name if not specified
+    if args.out is None:
+        out_name = f"models_lr{args.lr:.0e}_h{args.hidden}_l{args.num_layers}_gc{args.grad_clip}_do{args.dropout}"
+        args.out = out_name
 
     os.makedirs(args.out, exist_ok=True)
 
@@ -294,7 +312,9 @@ def main():
     print(f"[+] Nodes per graph: {benign.x.size(0)}, Edges: {benign.edge_index.size(1)}")
 
     # Initialize model (keep in float32)
-    model = GCNGraphClassifier(in_dim=in_dim, hidden=args.hidden, num_classes=num_classes).to(device)
+    model = GCNGraphClassifier(in_dim=in_dim, hidden=args.hidden, num_classes=num_classes,
+                                num_layers=args.num_layers, dropout=args.dropout).to(device)
+    print(f"[+] Model: {args.num_layers} GCN layers, {args.hidden} hidden dims, dropout={args.dropout}")
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
@@ -327,10 +347,10 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         tr_loss, tr_acc = run_epoch(model, args.data_dir, train_ids, args.batch_size, id2idx,
                                      optimizer=opt, device=device, use_float16=args.float16,
-                                     max_num_files=args.max_num_files, scaler=scaler)
+                                     max_num_files=args.max_num_files, scaler=scaler, grad_clip=args.grad_clip)
         va_loss, va_acc = run_epoch(model, args.data_dir, val_ids, args.batch_size, id2idx,
                                      optimizer=None, device=device, use_float16=args.float16,
-                                     max_num_files=args.max_num_files, scaler=scaler)
+                                     max_num_files=args.max_num_files, scaler=scaler, grad_clip=args.grad_clip)
         print(f"[epoch] {epoch:03d} [{time.time() - start_time}s] | train {tr_acc:.3f} loss {tr_loss:.4f} | val {va_acc:.3f} loss {va_loss:.4f}")
 
         # Save history
@@ -348,7 +368,11 @@ def main():
                 "history": history,
                 "in_dim": in_dim,
                 "num_classes": num_classes,
-                "hidden": args.hidden
+                "hidden": args.hidden,
+                "num_layers": args.num_layers,
+                "dropout": args.dropout,
+                "lr": args.lr,
+                "grad_clip": args.grad_clip
             }
             if scaler is not None:
                 checkpoint_data["scaler"] = scaler.state_dict()
@@ -360,7 +384,7 @@ def main():
     # Test evaluation
     te_loss, te_acc = run_epoch(model, args.data_dir, test_ids, args.batch_size, id2idx,
                                  optimizer=None, device=device, use_float16=args.float16,
-                                 max_num_files=args.max_num_files, scaler=scaler)
+                                 max_num_files=args.max_num_files, scaler=scaler, grad_clip=args.grad_clip)
     print(f"[test] acc {te_acc:.3f} loss {te_loss:.4f}")
 
     # Save final model
@@ -373,6 +397,10 @@ def main():
         "in_dim": in_dim,
         "num_classes": num_classes,
         "hidden": args.hidden,
+        "num_layers": args.num_layers,
+        "dropout": args.dropout,
+        "lr": args.lr,
+        "grad_clip": args.grad_clip,
         "test_loss": te_loss,
         "test_acc": te_acc
     }
