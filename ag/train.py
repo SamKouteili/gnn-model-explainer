@@ -198,18 +198,24 @@ def run_epoch(model, data_dir, file_ids, batch_size, id2idx, optimizer=None, dev
     """Run one epoch by sampling batches on-the-fly."""
     model.train(optimizer is not None)
 
+    # Shuffle file IDs for this epoch (sampling without replacement)
+    epoch_file_ids = list(file_ids)
+    random.shuffle(epoch_file_ids)
+
+    # Limit to max_num_files if specified
+    if max_num_files is not None and max_num_files < len(epoch_file_ids):
+        epoch_file_ids = epoch_file_ids[:max_num_files]
+
     # Calculate number of batches
-    if num_batches is None:
-        effective_files = len(file_ids)
-        if max_num_files is not None and max_num_files < effective_files:
-            effective_files = max_num_files
-        num_batches = max(1, effective_files // batch_size)
+    num_batches = max(1, len(epoch_file_ids) // batch_size)
 
     total = correct = 0
     loss_sum = 0.0
 
     for i in range(num_batches):
-        batch = sample_batch(data_dir, file_ids, batch_size, id2idx, device, use_float16=use_float16)
+        # Get batch_size file IDs for this batch (without replacement)
+        batch_file_ids = epoch_file_ids[i * batch_size : (i + 1) * batch_size]
+        batch = sample_batch(data_dir, batch_file_ids, batch_size, id2idx, device, use_float16=use_float16)
 
         if optimizer:
             optimizer.zero_grad()
