@@ -6,6 +6,8 @@ from torch_geometric.data import Data
 from torch_geometric.nn import GCNConv, global_mean_pool
 from torch_geometric.explain import Explainer
 from torch_geometric.explain.algorithm import GNNExplainer
+from collections import defaultdict
+import numpy as np
 
 # Import from your existing code
 from pyg import load_master_topology, build_plain_sample, NODE_FEATURE_KEYS, ADD_IS_ACTIVE_FLAG
@@ -45,6 +47,169 @@ class GCNGraphClassifier(torch.nn.Module):
         x = global_mean_pool(x, batch)
         return F.log_softmax(self.lin(x), dim=-1)
 
+def explain_single_graph(model, explainer, graph_data, idx2id, device):
+    """
+    Explain a single graph and return node/edge importance scores.
+    Returns: (node_mask, edge_mask, active_mask, edge_index, edge_attr, prediction)
+    """
+    explanation = explainer(
+        graph_data.x,
+        graph_data.edge_index,
+        edge_attr=graph_data.edge_attr,
+        batch=torch.zeros(graph_data.num_nodes, dtype=torch.long, device=graph_data.x.device),
+        index=0,
+    )
+
+    node_mask = explanation.node_mask.cpu().numpy().squeeze()
+    edge_mask = explanation.edge_mask.cpu().numpy().squeeze()
+    active_mask = (graph_data.x.cpu() != 0).any(dim=1).numpy()
+
+    return {
+        'node_mask': node_mask,
+        'edge_mask': edge_mask,
+        'active_mask': active_mask,
+        'edge_index': graph_data.edge_index.cpu().numpy(),
+        'edge_attr': graph_data.edge_attr.cpu().numpy() if graph_data.edge_attr is not None else None,
+        'prediction': explanation.prediction.cpu().numpy()
+    }
+
+
+def batch_explain_and_aggregate(model, explainer, data_dir, id2idx, idx2id, device,
+                                  num_benign=50, num_injected=50, top_k=20):
+    """
+    Explain multiple graphs and aggregate node importance scores.
+    Returns discriminative nodes that distinguish injected from benign.
+    """
+    print(f"\n{'='*80}")
+    print(f"BATCH EXPLANATION: {num_benign} benign + {num_injected} injected graphs")
+    print(f"{'='*80}\n")
+
+    # Collect all explanations
+    benign_scores = defaultdict(list)  # node_id -> list of scores
+    injected_scores = defaultdict(list)
+
+    benign_edge_scores = defaultdict(list)  # (src_id, dst_id) -> list of scores
+    injected_edge_scores = defaultdict(list)
+
+    # Process benign graphs
+    benign_files = sorted(glob.glob(os.path.join(data_dir, "benign/*.json")))[:num_benign]
+    print(f"[...] Explaining {len(benign_files)} benign graphs...")
+    for i, graph_path in enumerate(benign_files):
+        print(f"  [{i+1}/{len(benign_files)}] {os.path.basename(graph_path)}")
+        try:
+            graph_dict = build_plain_sample(graph_path, id2idx, label=0,
+                                             node_feature_keys=NODE_FEATURE_KEYS,
+                                             add_is_active_flag=ADD_IS_ACTIVE_FLAG,
+                                             use_float16=False)
+            graph_data = Data(**graph_dict).to(device)
+            result = explain_single_graph(model, explainer, graph_data, idx2id, device)
+
+            # Collect node scores (only for active nodes)
+            for idx in range(len(result['node_mask'])):
+                if result['active_mask'][idx]:
+                    node_id = idx2id[idx]
+                    benign_scores[node_id].append(float(result['node_mask'][idx]))
+
+            # Collect edge scores
+            for edge_idx in range(result['edge_index'].shape[1]):
+                src_idx = result['edge_index'][0, edge_idx]
+                dst_idx = result['edge_index'][1, edge_idx]
+                src_id = idx2id[src_idx]
+                dst_id = idx2id[dst_idx]
+                edge_id = (src_id, dst_id)
+                benign_edge_scores[edge_id].append(float(result['edge_mask'][edge_idx]))
+
+        except Exception as e:
+            print(f"    [!] Failed: {e}")
+            continue
+
+    # Process injected graphs
+    injected_files = sorted(glob.glob(os.path.join(data_dir, "injected/*.json")))[:num_injected]
+    print(f"\n[...] Explaining {len(injected_files)} injected graphs...")
+    for i, graph_path in enumerate(injected_files):
+        print(f"  [{i+1}/{len(injected_files)}] {os.path.basename(graph_path)}")
+        try:
+            graph_dict = build_plain_sample(graph_path, id2idx, label=1,
+                                             node_feature_keys=NODE_FEATURE_KEYS,
+                                             add_is_active_flag=ADD_IS_ACTIVE_FLAG,
+                                             use_float16=False)
+            graph_data = Data(**graph_dict).to(device)
+            result = explain_single_graph(model, explainer, graph_data, idx2id, device)
+
+            # Collect node scores
+            for idx in range(len(result['node_mask'])):
+                if result['active_mask'][idx]:
+                    node_id = idx2id[idx]
+                    injected_scores[node_id].append(float(result['node_mask'][idx]))
+
+            # Collect edge scores
+            for edge_idx in range(result['edge_index'].shape[1]):
+                src_idx = result['edge_index'][0, edge_idx]
+                dst_idx = result['edge_index'][1, edge_idx]
+                src_id = idx2id[src_idx]
+                dst_id = idx2id[dst_idx]
+                edge_id = (src_id, dst_id)
+                injected_edge_scores[edge_id].append(float(result['edge_mask'][edge_idx]))
+
+        except Exception as e:
+            print(f"    [!] Failed: {e}")
+            continue
+
+    # Aggregate scores: compute mean and discriminative score
+    print(f"\n[...] Aggregating scores across all graphs...")
+
+    all_node_ids = set(benign_scores.keys()) | set(injected_scores.keys())
+    node_stats = []
+
+    for node_id in all_node_ids:
+        benign_vals = benign_scores.get(node_id, [])
+        injected_vals = injected_scores.get(node_id, [])
+
+        benign_mean = np.mean(benign_vals) if benign_vals else 0.0
+        injected_mean = np.mean(injected_vals) if injected_vals else 0.0
+        discriminative_score = injected_mean - benign_mean
+
+        node_stats.append({
+            'node_id': node_id,
+            'injected_mean': injected_mean,
+            'benign_mean': benign_mean,
+            'discriminative_score': discriminative_score,
+            'freq_injected': len(injected_vals),
+            'freq_benign': len(benign_vals),
+            'total_injected': len(injected_files),
+            'total_benign': len(benign_files),
+        })
+
+    # Sort by discriminative score
+    node_stats.sort(key=lambda x: x['discriminative_score'], reverse=True)
+
+    # Aggregate edge scores
+    all_edge_ids = set(benign_edge_scores.keys()) | set(injected_edge_scores.keys())
+    edge_stats = []
+
+    for edge_id in all_edge_ids:
+        benign_vals = benign_edge_scores.get(edge_id, [])
+        injected_vals = injected_edge_scores.get(edge_id, [])
+
+        benign_mean = np.mean(benign_vals) if benign_vals else 0.0
+        injected_mean = np.mean(injected_vals) if injected_vals else 0.0
+        discriminative_score = injected_mean - benign_mean
+
+        edge_stats.append({
+            'src_id': edge_id[0],
+            'dst_id': edge_id[1],
+            'injected_mean': injected_mean,
+            'benign_mean': benign_mean,
+            'discriminative_score': discriminative_score,
+            'freq_injected': len(injected_vals),
+            'freq_benign': len(benign_vals),
+        })
+
+    edge_stats.sort(key=lambda x: x['discriminative_score'], reverse=True)
+
+    return node_stats, edge_stats
+
+
 def main():
     ap = argparse.ArgumentParser(description="Explain GCN predictions using GNNExplainer")
     ap.add_argument("model_path", type=str, help="Path to trained model .pt file")
@@ -54,6 +219,13 @@ def main():
     ap.add_argument("--explainer-epochs", type=int, default=100)
     ap.add_argument("--output-dir", type=str, default="explanations")
     ap.add_argument("--cuda", action="store_true")
+
+    # Batch aggregation mode
+    ap.add_argument("--batch", action="store_true", help="Run batch explanation and aggregation")
+    ap.add_argument("--num-benign", type=int, default=50, help="Number of benign graphs to explain")
+    ap.add_argument("--num-injected", type=int, default=50, help="Number of injected graphs to explain")
+    ap.add_argument("--top-k", type=int, default=20, help="Number of top discriminative nodes/edges to report")
+
     args = ap.parse_args()
 
     device = torch.device("cuda" if args.cuda and torch.cuda.is_available() else "cpu")
@@ -107,6 +279,78 @@ def main():
     id2idx, idx2id = load_master_topology(vocab_path)
     print(f"[✓] Loaded vocabulary: {len(idx2id)} nodes")
 
+    # Create explainer (shared for single and batch mode)
+    explainer = Explainer(
+        model=model,
+        algorithm=GNNExplainer(epochs=args.explainer_epochs),
+        explanation_type="model",
+        node_mask_type="object",  # Per-node importance (not per-feature)
+        edge_mask_type="object",
+        model_config=dict(
+            mode="multiclass_classification",
+            task_level="graph",
+            return_type="log_probs",
+        ),
+    )
+
+    # BATCH MODE: Explain multiple graphs and aggregate
+    if args.batch:
+        node_stats, edge_stats = batch_explain_and_aggregate(
+            model, explainer, args.data_dir, id2idx, idx2id, device,
+            num_benign=args.num_benign,
+            num_injected=args.num_injected,
+            top_k=args.top_k
+        )
+
+        # Print results
+        print(f"\n{'='*100}")
+        print(f"TOP {args.top_k} DISCRIMINATIVE NODES (favor injected over benign):")
+        print(f"{'='*100}")
+        print(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}")
+        print(f"{'-'*100}")
+        for stat in node_stats[:args.top_k]:
+            print(f"{stat['node_id']:<40} | {stat['injected_mean']:>8.4f} | {stat['benign_mean']:>8.4f} | "
+                  f"{stat['discriminative_score']:>+8.4f} | {stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
+                  f"{stat['freq_benign']:>4}/{stat['total_benign']:<5}")
+
+        print(f"\n{'='*100}")
+        print(f"TOP {args.top_k} DISCRIMINATIVE EDGES (favor injected over benign):")
+        print(f"{'='*100}")
+        print(f"{'Source':<30} -> {'Destination':<30} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8}")
+        print(f"{'-'*100}")
+        for stat in edge_stats[:args.top_k]:
+            print(f"{stat['src_id']:<30} -> {stat['dst_id']:<30} | {stat['injected_mean']:>8.4f} | "
+                  f"{stat['benign_mean']:>8.4f} | {stat['discriminative_score']:>+8.4f}")
+
+        # Save aggregated results
+        os.makedirs(args.output_dir, exist_ok=True)
+        agg_file = os.path.join(args.output_dir, "discriminative_nodes_edges.txt")
+        with open(agg_file, 'w') as f:
+            f.write(f"BATCH EXPLANATION RESULTS\n")
+            f.write(f"Benign graphs: {args.num_benign}, Injected graphs: {args.num_injected}\n")
+            f.write(f"Explainer epochs: {args.explainer_epochs}\n\n")
+
+            f.write(f"TOP {args.top_k} DISCRIMINATIVE NODES:\n")
+            f.write(f"{'='*100}\n")
+            f.write(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}\n")
+            f.write(f"{'-'*100}\n")
+            for stat in node_stats[:args.top_k]:
+                f.write(f"{stat['node_id']:<40} | {stat['injected_mean']:>8.4f} | {stat['benign_mean']:>8.4f} | "
+                        f"{stat['discriminative_score']:>+8.4f} | {stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
+                        f"{stat['freq_benign']:>4}/{stat['total_benign']:<5}\n")
+
+            f.write(f"\n\nTOP {args.top_k} DISCRIMINATIVE EDGES:\n")
+            f.write(f"{'='*100}\n")
+            f.write(f"{'Source':<30} -> {'Destination':<30} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8}\n")
+            f.write(f"{'-'*100}\n")
+            for stat in edge_stats[:args.top_k]:
+                f.write(f"{stat['src_id']:<30} -> {stat['dst_id']:<30} | {stat['injected_mean']:>8.4f} | "
+                        f"{stat['benign_mean']:>8.4f} | {stat['discriminative_score']:>+8.4f}\n")
+
+        print(f"\n[✓] Saved aggregated results to {agg_file}")
+        return
+
+    # SINGLE GRAPH MODE: Explain one specific graph
     # Load graph to explain
     if args.graph_file:
         graph_path = os.path.join(args.data_dir, args.graph_file)
@@ -128,39 +372,16 @@ def main():
     print(f"[✓] Loaded graph from {graph_path}")
     print(f"    Nodes: {to_explain.num_nodes}, Edges: {to_explain.num_edges}, Label: {label}")
 
-    # Create explainer
-    explainer = Explainer(
-        model=model,
-        algorithm=GNNExplainer(epochs=args.explainer_epochs),
-        explanation_type="model",
-        node_mask_type="object",  # Per-node importance (not per-feature)
-        edge_mask_type="object",
-        model_config=dict(
-            mode="multiclass_classification",
-            task_level="graph",
-            return_type="log_probs",
-        ),
-    )
-
     # Generate explanation
     print(f"[...] Generating explanation (this may take a while)...")
-    explanation = explainer(
-        to_explain.x,
-        to_explain.edge_index,
-        edge_attr=to_explain.edge_attr,
-        batch=torch.zeros(to_explain.num_nodes, dtype=torch.long, device=to_explain.x.device),
-        index=0,
-    )
-    print(f"[✓] Generated explanations: {explanation.available_explanations}")
+    result = explain_single_graph(model, explainer, to_explain, idx2id, device)
+    print(f"[✓] Generated explanation")
 
     # Extract important nodes and edges with their IDs
-    import numpy as np
-
-    node_mask = explanation.node_mask.cpu().numpy().squeeze()  # Remove singleton dimensions
-    edge_mask = explanation.edge_mask.cpu().numpy().squeeze()
-
-    # Find active nodes (non-zero features)
-    active_mask = (to_explain.x.cpu() != 0).any(dim=1).numpy()
+    node_mask = result['node_mask']
+    edge_mask = result['edge_mask']
+    active_mask = result['active_mask']
+    edge_index_np = result['edge_index']
     num_active = active_mask.sum()
 
     print(f"\n[+] Graph has {num_active} active nodes out of {len(active_mask)} total")
@@ -185,7 +406,6 @@ def main():
     top_k_edges = min(20, len(edge_mask))
     top_edge_indices = np.argsort(edge_mask)[::-1][:top_k_edges]
 
-    edge_index_np = to_explain.edge_index.cpu().numpy()
     print(f"\n{'='*80}")
     print(f"TOP 20 IMPORTANT EDGES:")
     print(f"{'='*80}")
@@ -195,7 +415,7 @@ def main():
         src_id = idx2id[src_idx]
         dst_id = idx2id[dst_idx]
         score = edge_mask[edge_idx]
-        edge_weight = to_explain.edge_attr[edge_idx].item() if to_explain.edge_attr is not None else 1.0
+        edge_weight = result['edge_attr'][edge_idx] if result['edge_attr'] is not None else 1.0
         print(f"  {src_id:30s} -> {dst_id:30s} | score: {score:.4f} | weight: {edge_weight:.4f}")
 
     # Save results to file
@@ -204,7 +424,7 @@ def main():
     results_file = os.path.join(args.output_dir, "important_nodes_edges.txt")
     with open(results_file, 'w') as f:
         f.write(f"Explanation for: {graph_path}\n")
-        f.write(f"Model prediction: {explanation.prediction.cpu().numpy()}\n\n")
+        f.write(f"Model prediction: {result['prediction']}\n\n")
 
         f.write("TOP 20 IMPORTANT NODES:\n")
         f.write("="*80 + "\n")
@@ -221,25 +441,10 @@ def main():
             src_id = idx2id[src_idx]
             dst_id = idx2id[dst_idx]
             score = edge_mask[edge_idx]
-            edge_weight = to_explain.edge_attr[edge_idx].item() if to_explain.edge_attr is not None else 1.0
+            edge_weight = result['edge_attr'][edge_idx] if result['edge_attr'] is not None else 1.0
             f.write(f"{src_id:30s} -> {dst_id:30s} | score: {score:.4f} | weight: {edge_weight:.4f}\n")
 
     print(f"\n[✓] Saved important nodes/edges to {results_file}")
-
-    # Save visualizations
-    try:
-        feat_path = os.path.join(args.output_dir, "feature_importance.png")
-        explanation.visualize_feature_importance(feat_path, top_k=3)
-        print(f"[✓] Saved feature importance to {feat_path}")
-    except Exception as e:
-        print(f"[!] Feature importance visualization failed: {e}")
-
-    try:
-        graph_viz_path = os.path.join(args.output_dir, "subgraph.pdf")
-        explanation.visualize_graph(graph_viz_path)
-        print(f"[✓] Saved subgraph visualization to {graph_viz_path}")
-    except Exception as e:
-        print(f"[!] Subgraph visualization failed: {e}")
 
 if __name__ == "__main__":
     main()
