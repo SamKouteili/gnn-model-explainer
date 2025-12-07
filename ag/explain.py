@@ -169,6 +169,22 @@ def batch_explain_and_aggregate(model, explainer, data_dir, id2idx, idx2id, devi
         injected_mean = np.mean(injected_vals) if injected_vals else 0.0
         discriminative_score = injected_mean - benign_mean
 
+        # Calculate standard deviations for robustness
+        benign_std = np.std(benign_vals) if len(benign_vals) > 1 else 0.0
+        injected_std = np.std(injected_vals) if len(injected_vals) > 1 else 0.0
+
+        # Compute effect size (Cohen's d) - measures strength of difference
+        pooled_std = np.sqrt((benign_std**2 + injected_std**2) / 2) if (benign_std > 0 or injected_std > 0) else 1.0
+        effect_size = discriminative_score / pooled_std if pooled_std > 0 else 0.0
+
+        # Frequency ratios
+        freq_inj_ratio = len(injected_vals) / len(injected_files) if injected_files else 0.0
+        freq_ben_ratio = len(benign_vals) / len(benign_files) if benign_files else 0.0
+
+        # Combined score: balances frequency and importance
+        # Favors nodes that appear frequently in injected, rarely in benign, with high importance
+        combined_score = discriminative_score * freq_inj_ratio * (1.0 - freq_ben_ratio * 0.5)
+
         node_stats.append({
             'node_id': node_id,
             'injected_mean': injected_mean,
@@ -176,12 +192,16 @@ def batch_explain_and_aggregate(model, explainer, data_dir, id2idx, idx2id, devi
             'discriminative_score': discriminative_score,
             'freq_injected': len(injected_vals),
             'freq_benign': len(benign_vals),
+            'freq_inj_ratio': freq_inj_ratio,
+            'freq_ben_ratio': freq_ben_ratio,
             'total_injected': len(injected_files),
             'total_benign': len(benign_files),
+            'effect_size': effect_size,
+            'combined_score': combined_score,
         })
 
-    # Sort by discriminative score
-    node_stats.sort(key=lambda x: x['discriminative_score'], reverse=True)
+    # Sort by combined score (default)
+    node_stats.sort(key=lambda x: x['combined_score'], reverse=True)
 
     # Aggregate edge scores
     all_edge_ids = set(benign_edge_scores.keys()) | set(injected_edge_scores.keys())
@@ -225,6 +245,9 @@ def main():
     ap.add_argument("--num-benign", type=int, default=50, help="Number of benign graphs to explain")
     ap.add_argument("--num-injected", type=int, default=50, help="Number of injected graphs to explain")
     ap.add_argument("--top-k", type=int, default=20, help="Number of top discriminative nodes/edges to report")
+    ap.add_argument("--min-freq", type=float, default=0.1, help="Minimum frequency ratio (0.0-1.0) for a node to be considered (default: 0.1 = 10%%)")
+    ap.add_argument("--rank-by", type=str, default="combined", choices=["combined", "discriminative", "frequency", "effect_size"],
+                    help="Ranking strategy: combined (freq*score), discriminative (avg difference), frequency (appearance count), effect_size (Cohen's d)")
 
     args = ap.parse_args()
 
@@ -302,15 +325,35 @@ def main():
             top_k=args.top_k
         )
 
+        # Filter by minimum frequency
+        print(f"\n[...] Filtering nodes with min frequency ratio: {args.min_freq:.2f}")
+        filtered_nodes = [
+            stat for stat in node_stats
+            if stat['freq_inj_ratio'] >= args.min_freq
+        ]
+        print(f"[✓] Kept {len(filtered_nodes)}/{len(node_stats)} nodes after frequency filter")
+
+        # Re-rank by chosen strategy
+        rank_key_map = {
+            'combined': 'combined_score',
+            'discriminative': 'discriminative_score',
+            'frequency': 'freq_inj_ratio',
+            'effect_size': 'effect_size',
+        }
+        rank_key = rank_key_map[args.rank_by]
+        filtered_nodes.sort(key=lambda x: x[rank_key], reverse=True)
+        print(f"[✓] Ranked by: {args.rank_by}")
+
         # Print results
-        print(f"\n{'='*100}")
-        print(f"TOP {args.top_k} DISCRIMINATIVE NODES (favor injected over benign):")
-        print(f"{'='*100}")
-        print(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}")
-        print(f"{'-'*100}")
-        for stat in node_stats[:args.top_k]:
+        print(f"\n{'='*120}")
+        print(f"TOP {args.top_k} DISCRIMINATIVE NODES (ranked by {args.rank_by}, min_freq={args.min_freq:.0%}):")
+        print(f"{'='*120}")
+        print(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Effect':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}")
+        print(f"{'-'*120}")
+        for stat in filtered_nodes[:args.top_k]:
             print(f"{stat['node_id']:<40} | {stat['injected_mean']:>8.4f} | {stat['benign_mean']:>8.4f} | "
-                  f"{stat['discriminative_score']:>+8.4f} | {stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
+                  f"{stat['discriminative_score']:>+8.4f} | {stat['effect_size']:>+8.2f} | "
+                  f"{stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
                   f"{stat['freq_benign']:>4}/{stat['total_benign']:<5}")
 
         print(f"\n{'='*100}")
@@ -328,15 +371,19 @@ def main():
         with open(agg_file, 'w') as f:
             f.write(f"BATCH EXPLANATION RESULTS\n")
             f.write(f"Benign graphs: {args.num_benign}, Injected graphs: {args.num_injected}\n")
-            f.write(f"Explainer epochs: {args.explainer_epochs}\n\n")
+            f.write(f"Explainer epochs: {args.explainer_epochs}\n")
+            f.write(f"Ranking strategy: {args.rank_by}\n")
+            f.write(f"Minimum frequency: {args.min_freq:.0%}\n")
+            f.write(f"Nodes after filtering: {len(filtered_nodes)}/{len(node_stats)}\n\n")
 
             f.write(f"TOP {args.top_k} DISCRIMINATIVE NODES:\n")
-            f.write(f"{'='*100}\n")
-            f.write(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}\n")
-            f.write(f"{'-'*100}\n")
-            for stat in node_stats[:args.top_k]:
+            f.write(f"{'='*120}\n")
+            f.write(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Effect':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}\n")
+            f.write(f"{'-'*120}\n")
+            for stat in filtered_nodes[:args.top_k]:
                 f.write(f"{stat['node_id']:<40} | {stat['injected_mean']:>8.4f} | {stat['benign_mean']:>8.4f} | "
-                        f"{stat['discriminative_score']:>+8.4f} | {stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
+                        f"{stat['discriminative_score']:>+8.4f} | {stat['effect_size']:>+8.2f} | "
+                        f"{stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
                         f"{stat['freq_benign']:>4}/{stat['total_benign']:<5}\n")
 
             f.write(f"\n\nTOP {args.top_k} DISCRIMINATIVE EDGES:\n")
