@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, os, glob
+import argparse, os, glob, sys
 import torch
 import torch.nn.functional as F
 from torch_geometric.data import Data
@@ -11,6 +11,15 @@ import numpy as np
 
 # Import from your existing code
 from pyg import load_master_topology, build_plain_sample, NODE_FEATURE_KEYS, ADD_IS_ACTIVE_FLAG
+
+# Add parent directory to path for neuronpedia import
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
+try:
+    from neuronpedia_integration import NeuronpediaClient
+    NEURONPEDIA_AVAILABLE = True
+except ImportError:
+    NEURONPEDIA_AVAILABLE = False
+    print("[!] Neuronpedia integration not available")
 
 class GCNGraphClassifier(torch.nn.Module):
     def __init__(self, in_dim: int, hidden: int = 128, num_classes: int = 2, num_layers: int = 2, dropout: float = 0.5):
@@ -230,6 +239,59 @@ def batch_explain_and_aggregate(model, explainer, data_dir, id2idx, idx2id, devi
     return node_stats, edge_stats
 
 
+def parse_node_id(node_id):
+    """Parse node ID string into (layer, neuron, feature_idx)."""
+    parts = node_id.split('_')
+    if len(parts) == 3:
+        try:
+            return int(parts[0]), int(parts[1]), int(parts[2])
+        except ValueError:
+            return None, None, None
+    return None, None, None
+
+
+def enrich_with_neuronpedia(node_stats, top_k=50, delay=0.2):
+    """Add Neuronpedia semantic descriptions to top discriminative nodes."""
+    if not NEURONPEDIA_AVAILABLE:
+        print("[!] Skipping Neuronpedia enrichment (module not available)")
+        return node_stats
+
+    print(f"\n[...] Fetching Neuronpedia interpretations for top {top_k} nodes...")
+    client = NeuronpediaClient(model_id="gemma-2-2b")
+
+    # Parse node IDs and fetch interpretations
+    import time
+    for i, stat in enumerate(node_stats[:top_k]):
+        if i > 0:
+            time.sleep(delay)  # Rate limiting
+
+        layer, neuron, feature_idx = parse_node_id(stat['node_id'])
+
+        if layer is None:
+            stat['neuronpedia_desc'] = None
+            stat['top_logits'] = None
+            continue
+
+        # Feature_idx is the actual SAE feature ID for transcoders
+        interp = client.get_feature_interpretation(layer, feature_idx, sae_type="transcoder")
+
+        if interp:
+            stat['neuronpedia_desc'] = interp.description
+            # Format top 3 promoted tokens
+            if interp.top_logits:
+                top_tokens = [f"'{t['token']}'" for t in interp.top_logits[:3]]
+                stat['top_logits'] = ", ".join(top_tokens)
+            else:
+                stat['top_logits'] = None
+            print(f"  [{i+1}/{top_k}] {stat['node_id']}: {interp.description[:80]}...")
+        else:
+            stat['neuronpedia_desc'] = None
+            stat['top_logits'] = None
+            print(f"  [{i+1}/{top_k}] {stat['node_id']}: No interpretation found")
+
+    return node_stats
+
+
 def main():
     ap = argparse.ArgumentParser(description="Explain GCN predictions using GNNExplainer")
     ap.add_argument("model_path", type=str, help="Path to trained model .pt file")
@@ -248,6 +310,7 @@ def main():
     ap.add_argument("--min-freq", type=float, default=0.1, help="Minimum frequency ratio (0.0-1.0) for a node to be considered (default: 0.1 = 10%%)")
     ap.add_argument("--rank-by", type=str, default="combined", choices=["combined", "discriminative", "frequency", "effect_size"],
                     help="Ranking strategy: combined (freq*score), discriminative (avg difference), frequency (appearance count), effect_size (Cohen's d)")
+    ap.add_argument("--neuronpedia", action="store_true", help="Enrich results with Neuronpedia semantic interpretations")
 
     args = ap.parse_args()
 
@@ -344,17 +407,26 @@ def main():
         filtered_nodes.sort(key=lambda x: x[rank_key], reverse=True)
         print(f"[✓] Ranked by: {args.rank_by}")
 
+        # Enrich with Neuronpedia if requested
+        if args.neuronpedia:
+            filtered_nodes = enrich_with_neuronpedia(filtered_nodes, top_k=min(args.top_k, len(filtered_nodes)))
+
         # Print results
         print(f"\n{'='*120}")
         print(f"TOP {args.top_k} DISCRIMINATIVE NODES (ranked by {args.rank_by}, min_freq={args.min_freq:.0%}):")
         print(f"{'='*120}")
-        print(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Effect':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}")
-        print(f"{'-'*120}")
-        for stat in filtered_nodes[:args.top_k]:
-            print(f"{stat['node_id']:<40} | {stat['injected_mean']:>8.4f} | {stat['benign_mean']:>8.4f} | "
-                  f"{stat['discriminative_score']:>+8.4f} | {stat['effect_size']:>+8.2f} | "
-                  f"{stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
-                  f"{stat['freq_benign']:>4}/{stat['total_benign']:<5}")
+
+        for i, stat in enumerate(filtered_nodes[:args.top_k]):
+            print(f"\n[{i+1}] {stat['node_id']}")
+            print(f"    Inj: {stat['injected_mean']:.4f} | Ben: {stat['benign_mean']:.4f} | Diff: {stat['discriminative_score']:+.4f} | Effect: {stat['effect_size']:+.2f}")
+            print(f"    Freq: {stat['freq_injected']}/{stat['total_injected']} inj, {stat['freq_benign']}/{stat['total_benign']} ben")
+
+            if args.neuronpedia and stat.get('neuronpedia_desc'):
+                print(f"    📝 {stat['neuronpedia_desc']}")
+                if stat.get('top_logits'):
+                    print(f"    🔤 Top tokens: {stat['top_logits']}")
+            elif args.neuronpedia:
+                print(f"    📝 No Neuronpedia interpretation found")
 
         print(f"\n{'='*100}")
         print(f"TOP {args.top_k} DISCRIMINATIVE EDGES (favor injected over benign):")
@@ -377,14 +449,25 @@ def main():
             f.write(f"Nodes after filtering: {len(filtered_nodes)}/{len(node_stats)}\n\n")
 
             f.write(f"TOP {args.top_k} DISCRIMINATIVE NODES:\n")
-            f.write(f"{'='*120}\n")
-            f.write(f"{'Node ID':<40} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8} | {'Effect':>8} | {'Freq Inj':>12} | {'Freq Ben':>12}\n")
-            f.write(f"{'-'*120}\n")
-            for stat in filtered_nodes[:args.top_k]:
-                f.write(f"{stat['node_id']:<40} | {stat['injected_mean']:>8.4f} | {stat['benign_mean']:>8.4f} | "
-                        f"{stat['discriminative_score']:>+8.4f} | {stat['effect_size']:>+8.2f} | "
-                        f"{stat['freq_injected']:>4}/{stat['total_injected']:<5} | "
-                        f"{stat['freq_benign']:>4}/{stat['total_benign']:<5}\n")
+            f.write(f"{'='*120}\n\n")
+
+            for i, stat in enumerate(filtered_nodes[:args.top_k]):
+                f.write(f"[{i+1}] {stat['node_id']}\n")
+                f.write(f"    Injected Avg: {stat['injected_mean']:.4f}\n")
+                f.write(f"    Benign Avg:   {stat['benign_mean']:.4f}\n")
+                f.write(f"    Difference:   {stat['discriminative_score']:+.4f}\n")
+                f.write(f"    Effect Size:  {stat['effect_size']:+.2f}\n")
+                f.write(f"    Frequency:    {stat['freq_injected']}/{stat['total_injected']} injected, "
+                        f"{stat['freq_benign']}/{stat['total_benign']} benign\n")
+
+                if args.neuronpedia and stat.get('neuronpedia_desc'):
+                    f.write(f"    Description:  {stat['neuronpedia_desc']}\n")
+                    if stat.get('top_logits'):
+                        f.write(f"    Top Tokens:   {stat['top_logits']}\n")
+                elif args.neuronpedia:
+                    f.write(f"    Description:  No Neuronpedia interpretation found\n")
+
+                f.write("\n")
 
             f.write(f"\n\nTOP {args.top_k} DISCRIMINATIVE EDGES:\n")
             f.write(f"{'='*100}\n")
