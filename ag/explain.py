@@ -224,6 +224,13 @@ def batch_explain_and_aggregate(model, explainer, data_dir, id2idx, idx2id, devi
         injected_mean = np.mean(injected_vals) if injected_vals else 0.0
         discriminative_score = injected_mean - benign_mean
 
+        # Frequency ratios
+        freq_inj_ratio = len(injected_vals) / len(injected_files) if injected_files else 0.0
+        freq_ben_ratio = len(benign_vals) / len(benign_files) if benign_files else 0.0
+
+        # Simple discriminative: (freq_inj - freq_ben) weighted by importance
+        frequency_discriminative = freq_inj_ratio - freq_ben_ratio
+
         edge_stats.append({
             'src_id': edge_id[0],
             'dst_id': edge_id[1],
@@ -232,9 +239,16 @@ def batch_explain_and_aggregate(model, explainer, data_dir, id2idx, idx2id, devi
             'discriminative_score': discriminative_score,
             'freq_injected': len(injected_vals),
             'freq_benign': len(benign_vals),
+            'freq_inj_ratio': freq_inj_ratio,
+            'freq_ben_ratio': freq_ben_ratio,
+            'frequency_discriminative': frequency_discriminative,
+            'combined_edge_score': discriminative_score * frequency_discriminative if frequency_discriminative > 0 else 0,
+            'total_injected': len(injected_files),
+            'total_benign': len(benign_files),
         })
 
-    edge_stats.sort(key=lambda x: x['discriminative_score'], reverse=True)
+    # Sort by combined score (importance * frequency difference)
+    edge_stats.sort(key=lambda x: x['combined_edge_score'], reverse=True)
 
     return node_stats, edge_stats
 
@@ -307,7 +321,8 @@ def main():
     ap.add_argument("--num-benign", type=int, default=50, help="Number of benign graphs to explain")
     ap.add_argument("--num-injected", type=int, default=50, help="Number of injected graphs to explain")
     ap.add_argument("--top-k", type=int, default=20, help="Number of top discriminative nodes/edges to report")
-    ap.add_argument("--min-freq", type=float, default=0.1, help="Minimum frequency ratio (0.0-1.0) for a node to be considered (default: 0.1 = 10%%)")
+    ap.add_argument("--min-freq", type=float, default=0.1, help="Minimum frequency ratio (0.0-1.0) in injected graphs for a node to be considered (default: 0.1 = 10%%)")
+    ap.add_argument("--max-benign-freq", type=float, default=1.0, help="Maximum frequency ratio (0.0-1.0) in benign graphs (default: 1.0 = no limit). Use 0.5 to exclude nodes in >50%% of benign graphs")
     ap.add_argument("--rank-by", type=str, default="combined", choices=["combined", "discriminative", "frequency", "effect_size"],
                     help="Ranking strategy: combined (freq*score), discriminative (avg difference), frequency (appearance count), effect_size (Cohen's d)")
     ap.add_argument("--neuronpedia", action="store_true", help="Enrich results with Neuronpedia semantic interpretations")
@@ -388,13 +403,16 @@ def main():
             top_k=args.top_k
         )
 
-        # Filter by minimum frequency
-        print(f"\n[...] Filtering nodes with min frequency ratio: {args.min_freq:.2f}")
+        # Filter by minimum injected frequency and maximum benign frequency
+        print(f"\n[...] Filtering nodes:")
+        print(f"    - Min injected frequency: {args.min_freq:.0%}")
+        print(f"    - Max benign frequency: {args.max_benign_freq:.0%}")
+
         filtered_nodes = [
             stat for stat in node_stats
-            if stat['freq_inj_ratio'] >= args.min_freq
+            if stat['freq_inj_ratio'] >= args.min_freq and stat['freq_ben_ratio'] <= args.max_benign_freq
         ]
-        print(f"[✓] Kept {len(filtered_nodes)}/{len(node_stats)} nodes after frequency filter")
+        print(f"[✓] Kept {len(filtered_nodes)}/{len(node_stats)} nodes after filtering")
 
         # Re-rank by chosen strategy
         rank_key_map = {
@@ -407,9 +425,43 @@ def main():
         filtered_nodes.sort(key=lambda x: x[rank_key], reverse=True)
         print(f"[✓] Ranked by: {args.rank_by}")
 
+        # Filter edges by frequency
+        filtered_edges = [
+            stat for stat in edge_stats
+            if stat['freq_inj_ratio'] >= args.min_freq and stat['freq_ben_ratio'] <= args.max_benign_freq
+        ]
+        print(f"[✓] Kept {len(filtered_edges)}/{len(edge_stats)} edges after filtering")
+
         # Enrich with Neuronpedia if requested
         if args.neuronpedia:
             filtered_nodes = enrich_with_neuronpedia(filtered_nodes, top_k=min(args.top_k, len(filtered_nodes)))
+
+            # Also enrich edges (get interpretations for source and destination)
+            print(f"\n[...] Fetching Neuronpedia interpretations for top {min(args.top_k, len(filtered_edges))} edges...")
+            client = NeuronpediaClient(model_id="gemma-2-2b")
+
+            for i, edge in enumerate(filtered_edges[:args.top_k]):
+                if i > 0:
+                    time.sleep(0.2)  # Rate limiting
+
+                # Parse source and destination
+                src_layer, src_neuron, src_feat = parse_node_id(edge['src_id'])
+                dst_layer, dst_neuron, dst_feat = parse_node_id(edge['dst_id'])
+
+                # Fetch interpretations
+                if src_layer is not None:
+                    src_interp = client.get_feature_interpretation(src_layer, src_feat, sae_type="transcoder")
+                    edge['src_desc'] = src_interp.description if src_interp else None
+                else:
+                    edge['src_desc'] = None
+
+                if dst_layer is not None:
+                    dst_interp = client.get_feature_interpretation(dst_layer, dst_feat, sae_type="transcoder")
+                    edge['dst_desc'] = dst_interp.description if dst_interp else None
+                else:
+                    edge['dst_desc'] = None
+
+                print(f"  [{i+1}/{min(args.top_k, len(filtered_edges))}] {edge['src_id']} -> {edge['dst_id']}")
 
         # Print results
         print(f"\n{'='*120}")
@@ -428,14 +480,21 @@ def main():
             elif args.neuronpedia:
                 print(f"    📝 No Neuronpedia interpretation found")
 
-        print(f"\n{'='*100}")
-        print(f"TOP {args.top_k} DISCRIMINATIVE EDGES (favor injected over benign):")
-        print(f"{'='*100}")
-        print(f"{'Source':<30} -> {'Destination':<30} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8}")
-        print(f"{'-'*100}")
-        for stat in edge_stats[:args.top_k]:
-            print(f"{stat['src_id']:<30} -> {stat['dst_id']:<30} | {stat['injected_mean']:>8.4f} | "
-                  f"{stat['benign_mean']:>8.4f} | {stat['discriminative_score']:>+8.4f}")
+        print(f"\n{'='*120}")
+        print(f"TOP {args.top_k} DISCRIMINATIVE EDGES:")
+        print(f"{'='*120}")
+
+        for i, edge in enumerate(filtered_edges[:args.top_k]):
+            print(f"\n[{i+1}] {edge['src_id']} -> {edge['dst_id']}")
+            print(f"    Inj: {edge['injected_mean']:.4f} | Ben: {edge['benign_mean']:.4f} | Diff: {edge['discriminative_score']:+.4f}")
+            print(f"    Freq: {edge['freq_injected']}/{edge['total_injected']} inj, {edge['freq_benign']}/{edge['total_benign']} ben")
+            print(f"    Freq Discriminative: {edge['frequency_discriminative']:+.2%}")
+
+            if args.neuronpedia:
+                if edge.get('src_desc'):
+                    print(f"    📤 Source: {edge['src_desc']}")
+                if edge.get('dst_desc'):
+                    print(f"    📥 Target: {edge['dst_desc']}")
 
         # Save aggregated results
         os.makedirs(args.output_dir, exist_ok=True)
@@ -445,7 +504,8 @@ def main():
             f.write(f"Benign graphs: {args.num_benign}, Injected graphs: {args.num_injected}\n")
             f.write(f"Explainer epochs: {args.explainer_epochs}\n")
             f.write(f"Ranking strategy: {args.rank_by}\n")
-            f.write(f"Minimum frequency: {args.min_freq:.0%}\n")
+            f.write(f"Min injected frequency: {args.min_freq:.0%}\n")
+            f.write(f"Max benign frequency: {args.max_benign_freq:.0%}\n")
             f.write(f"Nodes after filtering: {len(filtered_nodes)}/{len(node_stats)}\n\n")
 
             f.write(f"TOP {args.top_k} DISCRIMINATIVE NODES:\n")
@@ -470,12 +530,24 @@ def main():
                 f.write("\n")
 
             f.write(f"\n\nTOP {args.top_k} DISCRIMINATIVE EDGES:\n")
-            f.write(f"{'='*100}\n")
-            f.write(f"{'Source':<30} -> {'Destination':<30} | {'Inj Avg':>8} | {'Ben Avg':>8} | {'Diff':>8}\n")
-            f.write(f"{'-'*100}\n")
-            for stat in edge_stats[:args.top_k]:
-                f.write(f"{stat['src_id']:<30} -> {stat['dst_id']:<30} | {stat['injected_mean']:>8.4f} | "
-                        f"{stat['benign_mean']:>8.4f} | {stat['discriminative_score']:>+8.4f}\n")
+            f.write(f"{'='*120}\n\n")
+
+            for i, edge in enumerate(filtered_edges[:args.top_k]):
+                f.write(f"[{i+1}] {edge['src_id']} -> {edge['dst_id']}\n")
+                f.write(f"    Injected Avg: {edge['injected_mean']:.4f}\n")
+                f.write(f"    Benign Avg:   {edge['benign_mean']:.4f}\n")
+                f.write(f"    Difference:   {edge['discriminative_score']:+.4f}\n")
+                f.write(f"    Frequency:    {edge['freq_injected']}/{edge['total_injected']} injected, "
+                        f"{edge['freq_benign']}/{edge['total_benign']} benign\n")
+                f.write(f"    Freq Discriminative: {edge['frequency_discriminative']:+.2%}\n")
+
+                if args.neuronpedia:
+                    if edge.get('src_desc'):
+                        f.write(f"    Source Node:  {edge['src_desc']}\n")
+                    if edge.get('dst_desc'):
+                        f.write(f"    Target Node:  {edge['dst_desc']}\n")
+
+                f.write("\n")
 
         print(f"\n[✓] Saved aggregated results to {agg_file}")
         return
