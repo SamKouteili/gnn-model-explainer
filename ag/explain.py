@@ -8,6 +8,7 @@ from torch_geometric.explain import Explainer
 from torch_geometric.explain.algorithm import GNNExplainer
 from collections import defaultdict
 import numpy as np
+import time
 
 # Import from your existing code
 from pyg import load_master_topology, build_plain_sample, NODE_FEATURE_KEYS, ADD_IS_ACTIVE_FLAG
