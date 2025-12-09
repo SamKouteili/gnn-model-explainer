@@ -41,7 +41,7 @@ class NeuronpediaClient:
         logging.basicConfig(level=logging.WARNING)  # Reduce verbosity
         self.logger = logging.getLogger(__name__)
 
-    def get_gemmascope_layer_id(self, layer: int, sae_type: str = "res") -> str:
+    def get_gemmascope_layer_id(self, layer: int, sae_type: str = "transcoder") -> str:
         """Convert layer number to GemmaScope layer identifier"""
         return f"{layer}-gemmascope-{sae_type}-16k"
     
@@ -57,6 +57,7 @@ class NeuronpediaClient:
         for current_sae_type in sae_types_to_try:
             layer_id = self.get_gemmascope_layer_id(layer, current_sae_type)
             url = f"{self.base_url}/feature/{self.model_id}/{layer_id}/{feature_idx}"
+            print("url:", url)
             
             try:
                 response = self.session.get(url, timeout=10)
