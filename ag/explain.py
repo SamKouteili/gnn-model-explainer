@@ -497,9 +497,12 @@ def main():
                 if edge.get('dst_desc'):
                     print(f"    📥 Target: {edge['dst_desc']}")
 
-        # Save aggregated results
+        # Save aggregated results with descriptive filename
         os.makedirs(args.output_dir, exist_ok=True)
-        agg_file = os.path.join(args.output_dir, "discriminative_nodes_edges.txt")
+
+        # Create filename with parameters
+        filename = f"discriminative_minf{args.min_freq:.2f}_maxf{args.max_benign_freq:.2f}_rank{args.rank_by}.txt"
+        agg_file = os.path.join(args.output_dir, filename)
         with open(agg_file, 'w') as f:
             f.write(f"BATCH EXPLANATION RESULTS\n")
             f.write(f"Benign graphs: {args.num_benign}, Injected graphs: {args.num_injected}\n")
