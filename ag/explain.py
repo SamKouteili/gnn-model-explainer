@@ -280,15 +280,15 @@ def enrich_with_neuronpedia(node_stats, top_k=50, delay=0.2):
         if i > 0:
             time.sleep(delay)  # Rate limiting
 
-        layer, neuron, feature_idx = parse_node_id(stat['node_id'])
+        layer, sae_feature, suffix = parse_node_id(stat['node_id'])
 
         if layer is None:
             stat['neuronpedia_desc'] = None
             stat['top_logits'] = None
             continue
 
-        # Feature_idx is the actual SAE feature ID for transcoders
-        interp = client.get_feature_interpretation(layer, feature_idx, sae_type="transcoder")
+        # sae_feature (middle number) is the actual SAE feature ID to look up
+        interp = client.get_feature_interpretation(layer, sae_feature, sae_type="transcoder")
 
         if interp:
             stat['neuronpedia_desc'] = interp.description
@@ -298,7 +298,7 @@ def enrich_with_neuronpedia(node_stats, top_k=50, delay=0.2):
                 stat['top_logits'] = ", ".join(top_tokens)
             else:
                 stat['top_logits'] = None
-            print(f"  [{i+1}/{top_k}] {stat['node_id']}: {interp.description[:80]}...")
+            print(f"  [{i+1}/{top_k}] {stat['node_id']} (L{layer}F{sae_feature}): {interp.description[:80]}...")
         else:
             stat['neuronpedia_desc'] = None
             stat['top_logits'] = None
@@ -446,18 +446,18 @@ def main():
                     time.sleep(0.2)  # Rate limiting
 
                 # Parse source and destination
-                src_layer, src_neuron, src_feat = parse_node_id(edge['src_id'])
-                dst_layer, dst_neuron, dst_feat = parse_node_id(edge['dst_id'])
+                src_layer, src_sae_feature, src_suffix = parse_node_id(edge['src_id'])
+                dst_layer, dst_sae_feature, dst_suffix = parse_node_id(edge['dst_id'])
 
-                # Fetch interpretations
+                # Fetch interpretations (use middle number = SAE feature ID)
                 if src_layer is not None:
-                    src_interp = client.get_feature_interpretation(src_layer, src_feat, sae_type="transcoder")
+                    src_interp = client.get_feature_interpretation(src_layer, src_sae_feature, sae_type="transcoder")
                     edge['src_desc'] = src_interp.description if src_interp else None
                 else:
                     edge['src_desc'] = None
 
                 if dst_layer is not None:
-                    dst_interp = client.get_feature_interpretation(dst_layer, dst_feat, sae_type="transcoder")
+                    dst_interp = client.get_feature_interpretation(dst_layer, dst_sae_feature, sae_type="transcoder")
                     edge['dst_desc'] = dst_interp.description if dst_interp else None
                 else:
                     edge['dst_desc'] = None
@@ -501,7 +501,7 @@ def main():
         os.makedirs(args.output_dir, exist_ok=True)
 
         # Create filename with parameters
-        filename = f"discriminative_minf{args.min_freq:.2f}_maxf{args.max_benign_freq:.2f}_rank{args.rank_by}.txt"
+        filename = f"discriminative_minf{args.min_freq:.2f}_maxf{args.max_benign_freq:.2f}_rank{args.rank_by}_top{args.top_k}.txt"
         agg_file = os.path.join(args.output_dir, filename)
         with open(agg_file, 'w') as f:
             f.write(f"BATCH EXPLANATION RESULTS\n")
